@@ -1,476 +1,361 @@
-// ============================================
-// Логика админ-панели
-// ============================================
-
-(function() {
+// Панель владельца: личные отчёты и отдельное покрытие задач магазина.
+(function () {
   'use strict';
 
-  // --- Состояние ---
-  let currentUser = null;
-  let selectedDate = null; // YYYY-MM-DD
-  let dayData = { tasks: {}, customersLog: [] };
-  let refreshTimer = null;
+  const SECTIONS = ['morning', 'daytime', 'evening'];
+  const SECTION_NAMES = { morning: 'До 10:00', daytime: 'В течение дня', evening: 'До 20:00' };
+  const EMPLOYEES = Object.entries(CONFIG.USERS)
+    .filter(([, user]) => user.role === 'employee')
+    .map(([key, user]) => ({ key, name: user.name }));
+  let selectedDate = '';
+  let dayData = null;
+  let dataDate = null;
+  let requestVersion = 0;
+  let activeModal = null;
+  let activeEmployee = null;
+  let returnFocus = null;
 
-  // Сотрудники
-  const EMPLOYEES = ['Агнесса', 'Оксана'];
+  function today() {
+    return new Date().toLocaleDateString('sv-SE', { timeZone: CONFIG.TIMEZONE });
+  }
 
-  // --- Утилиты ---
+  function yesterday() {
+    const date = new Date(today() + 'T12:00:00Z');
+    date.setUTCDate(date.getUTCDate() - 1);
+    return date.toISOString().slice(0, 10);
+  }
 
-  function formatDateDisplay(date) {
-    return date.toLocaleDateString('ru-RU', {
-      timeZone: CONFIG.TIMEZONE,
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
+  function displayDate(date) {
+    return date.split('-').reverse().join('.');
+  }
+
+  function displayTime(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Время не указано' : date.toLocaleTimeString('ru-RU', {
+      timeZone: CONFIG.TIMEZONE, hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
   }
 
-  function formatDateAPI(date) {
-    return date.toLocaleDateString('sv-SE', { timeZone: CONFIG.TIMEZONE });
+  function node(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
   }
 
-  function getTodayStr() {
-    return formatDateAPI(new Date());
+  function dataStatus(message, state) {
+    const status = document.getElementById('data-status');
+    status.textContent = message;
+    status.dataset.state = state;
   }
 
-  function getYesterdayStr() {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return formatDateAPI(d);
-  }
-
-  function extractTime(isoString) {
-    try {
-      return new Date(isoString).toLocaleTimeString('ru-RU', {
-        timeZone: CONFIG.TIMEZONE,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      });
-    } catch {
-      return '';
-    }
-  }
-
-  function showToast(message, type = 'success') {
-    const toast = document.getElementById('toast');
-    toast.textContent = message;
-    toast.className = 'toast visible ' + type;
-    setTimeout(() => toast.classList.remove('visible'), 2500);
-  }
-
-  // --- Загрузка данных ---
-
-  async function loadDayData(date) {
-    if (date) selectedDate = date;
-
+  async function loadDayData() {
+    const requestedDate = selectedDate;
+    const version = ++requestVersion;
+    const refresh = document.getElementById('refresh-btn');
     const loading = document.getElementById('loading');
-    loading.style.display = 'flex';
-
-    try {
-      const data = await API.getDayData(selectedDate);
-      dayData = {
-        tasks: data.tasks || {},
-        customersLog: data.customersLog || []
-      };
-    } catch (err) {
-      console.error('Ошибка загрузки:', err);
-      showToast('Ошибка загрузки данных', 'error');
+    refresh.disabled = true;
+    loading.hidden = false;
+    document.getElementById('admin-data').setAttribute('aria-busy', 'true');
+    dataStatus('Загружаем отчёт за ' + displayDate(requestedDate) + '…', 'loading');
+    if (dataDate !== requestedDate) {
+      dayData = null;
+      document.getElementById('admin-data').hidden = true;
     }
 
-    loading.style.display = 'none';
-    renderAll();
+    try {
+      const response = await API.getDayData(requestedDate);
+      // Смена даты и повторное обновление могут завершиться в другом порядке.
+      if (version !== requestVersion || requestedDate !== selectedDate) return;
+      dayData = {
+        tasks: response.tasks || {},
+        customersLog: response.customersLog || [],
+        source: response.source,
+        stale: Boolean(response.stale || response.source === 'cache'),
+        lastSyncedAt: response.lastSyncedAt
+      };
+      dataDate = requestedDate;
+      const syncTime = response.lastSyncedAt ? displayTime(response.lastSyncedAt) : '';
+      if (dayData.stale) {
+        dataStatus('Сохранённая копия. Связь с сервером не подтверждена.' +
+          (syncTime ? ' Последнее обновление: ' + syncTime + '.' : '') + ' Нажмите «Обновить».', 'warning');
+      } else {
+        dataStatus('Данные с сервера · обновлено ' + (syncTime || displayTime(new Date())) + ' · время московское', 'success');
+      }
+      renderAll();
+      document.getElementById('admin-data').hidden = false;
+    } catch (error) {
+      if (version !== requestVersion || requestedDate !== selectedDate) return;
+      if (dayData && dataDate === requestedDate) {
+        dayData.stale = true;
+        dataStatus('Не удалось обновить отчёт. Показаны предыдущие данные за выбранную дату. Повторите обновление.', 'error');
+      } else {
+        document.getElementById('admin-data').hidden = true;
+        dataStatus('Отчёт за ' + displayDate(requestedDate) + ' не загружен. ' +
+          (error.message || 'Проверьте подключение.') + ' Нажмите «Обновить», чтобы повторить.', 'error');
+      }
+    } finally {
+      if (version === requestVersion) {
+        refresh.disabled = false;
+        loading.hidden = true;
+        document.getElementById('admin-data').setAttribute('aria-busy', 'false');
+      }
+    }
   }
 
-  // --- Рендеринг ---
+  function entryFor(employee, taskId) {
+    return dayData.tasks[employee + '_' + taskId];
+  }
+
+  function sectionStats(section, employee) {
+    const result = { total: TASKS[section].length, completed: 0, failed: 0, pending: 0, late: 0, problems: [] };
+    TASKS[section].forEach(task => {
+      const entries = employee
+        ? [entryFor(employee, task.id)].filter(Boolean)
+        : EMPLOYEES.map(emp => entryFor(emp.name, task.id)).filter(Boolean);
+      // Отказ одного сотрудника не перекрывает успешное выполнение другим.
+      const successful = entries.filter(entry => !entry.isFailed);
+      if (successful.length) {
+        result.completed++;
+        if (successful.every(entry => entry.isLate)) result.late++;
+      } else if (entries.length) {
+        result.failed++;
+        result.problems.push({ task, failed: true });
+      } else {
+        result.pending++;
+        result.problems.push({ task, failed: false });
+      }
+    });
+    return result;
+  }
+
+  function setProgress(prefix, section, stats) {
+    const bar = document.getElementById(prefix + '-' + section + '-bar');
+    const text = document.getElementById(prefix + '-' + section + '-text');
+    if (!bar || !text) return;
+    const percent = stats.total ? stats.completed / stats.total * 100 : 0;
+    bar.style.width = percent + '%';
+    bar.className = 'section-progress-fill ' + (percent === 100 ? 'complete' : percent ? 'partial' : 'empty');
+    text.textContent = stats.completed + '/' + stats.total;
+    bar.parentElement.setAttribute('role', 'progressbar');
+    bar.parentElement.setAttribute('aria-label', SECTION_NAMES[section] + ': выполнено');
+    bar.parentElement.setAttribute('aria-valuemin', '0');
+    bar.parentElement.setAttribute('aria-valuemax', String(stats.total));
+    bar.parentElement.setAttribute('aria-valuenow', String(stats.completed));
+  }
+
+  function totals(employee) {
+    return SECTIONS.reduce((sum, section) => {
+      const stats = sectionStats(section, employee);
+      ['completed', 'failed', 'pending', 'late'].forEach(key => { sum[key] += stats[key]; });
+      sum.problems.push(...stats.problems);
+      return sum;
+    }, { completed: 0, failed: 0, pending: 0, late: 0, problems: [] });
+  }
+
+  function renderStatusSummary(element, stats) {
+    element.replaceChildren();
+    element.append(
+      node('span', 'status-pill success', 'Выполнено: ' + stats.completed),
+      node('span', 'status-pill failed', 'Не выполнено: ' + stats.failed),
+      node('span', 'status-pill pending', 'Без отметки: ' + stats.pending)
+    );
+    if (stats.late) element.append(node('span', 'status-pill late', 'С опозданием: ' + stats.late));
+  }
 
   function renderAll() {
-    renderOverallStatus();
-    EMPLOYEES.forEach(emp => renderEmployeeCard(emp));
-    renderWorkStatus();
+    const overall = totals();
+    SECTIONS.forEach(section => setProgress('overall', section, sectionStats(section)));
+    document.getElementById('overall-total').textContent = overall.completed + '/' + TOTAL_TASKS;
+    renderStatusSummary(document.getElementById('overall-status-summary'), overall);
+
+    const allPersonal = EMPLOYEES.map(employee => totals(employee.name));
+    const failed = allPersonal.reduce((sum, stats) => sum + stats.failed, 0);
+    const late = allPersonal.reduce((sum, stats) => sum + stats.late, 0);
+    const pending = allPersonal.reduce((sum, stats) => sum + stats.pending, 0);
+    document.getElementById('attention-summary').textContent =
+      'В личных отчётах: ' + failed + ' не выполнено · ' + late + ' с опозданием · ' + pending + ' без отметки.';
+
+    EMPLOYEES.forEach(renderEmployee);
+    renderCustomers();
+    if (activeEmployee && activeModal === 'detail-modal') renderDetails(activeEmployee);
   }
 
-  /**
-   * Отрисовать общий статус дня (все задачи, независимо от сотрудника)
-   */
-  function renderOverallStatus() {
-    const sections = ['morning', 'daytime', 'evening'];
-    let grandTotal = 0;
+  function renderEmployee(employee) {
+    const stats = totals(employee.name);
+    document.getElementById(employee.key + '-card').setAttribute('aria-label',
+      employee.name + ': выполнено ' + stats.completed + ' из ' + TOTAL_TASKS +
+      ', не выполнено ' + stats.failed + ', без отметки ' + stats.pending + '. Открыть личный отчёт.');
+    SECTIONS.forEach(section => setProgress(employee.key, section, sectionStats(section, employee.name)));
+    document.getElementById(employee.key + '-total').textContent = stats.completed + '/' + TOTAL_TASKS;
+    renderStatusSummary(document.getElementById(employee.key + '-status-summary'), stats);
 
-    sections.forEach(section => {
-      const stats = getSectionStats(section);
-      grandTotal += stats.completed;
-
-      const bar = document.getElementById(`overall-${section}-bar`);
-      const text = document.getElementById(`overall-${section}-text`);
-
-      if (bar && text) {
-        const pct = stats.total > 0 ? (stats.completed / stats.total * 100) : 0;
-        bar.style.width = pct + '%';
-        bar.className = 'section-progress-fill';
-        if (pct === 0) bar.classList.add('empty');
-        else if (pct < 100) bar.classList.add('partial');
-        text.textContent = `${stats.completed}/${stats.total}`;
-      }
-    });
-
-    const totalEl = document.getElementById('overall-total');
-    if (totalEl) {
-      totalEl.textContent = `${grandTotal}/${TOTAL_TASKS}`;
-      totalEl.className = 'total-number';
-      if (grandTotal < TOTAL_TASKS) totalEl.classList.add('incomplete');
-    }
-  }
-
-  /**
-   * Посчитать выполненные задачи в секции (задачи общие — выполняет любой сотрудник)
-   */
-  function getSectionStats(section) {
-    const tasks = TASKS[section];
-    let completed = 0;
-    let lateCount = 0;
-    const incompleteTasks = [];
-    const completedList = [];
-
-    tasks.forEach(task => {
-      // Проверяем композитные ключи для каждого сотрудника
-      let found = false;
-      for (const emp of EMPLOYEES) {
-        const compositeKey = emp + '_' + task.id;
-        const data = dayData.tasks[compositeKey];
-        if (data) {
-          completed++;
-          if (data.isLate) lateCount++;
-          completedList.push({ ...task, ...data });
-          found = true;
-          break; // Считаем один раз для общего статуса
-        }
-      }
-      if (!found) {
-        incompleteTasks.push(task);
-      }
-    });
-
-    return {
-      total: tasks.length,
-      completed,
-      lateCount,
-      incompleteTasks,
-      completedList
-    };
-  }
-
-  /**
-   * Посчитать задачи, выполненные конкретным сотрудником в секции
-   */
-  function getEmployeeSectionStats(employee, section) {
-    const tasks = TASKS[section];
-    let completed = 0;
-    let lateCount = 0;
-    const incompleteTasks = [];
-    const completedList = [];
-
-    tasks.forEach(task => {
-      const compositeKey = employee + '_' + task.id;
-      const data = dayData.tasks[compositeKey];
-      if (data) {
-        completed++;
-        if (data.isLate) lateCount++;
-        completedList.push({ ...task, ...data });
-      } else {
-        incompleteTasks.push(task);
-      }
-    });
-
-    return {
-      total: tasks.length,
-      completed,
-      lateCount,
-      incompleteTasks,
-      completedList
-    };
-  }
-
-  function renderEmployeeCard(employee) {
-    const key = employee === 'Агнесса' ? 'agnesa' : 'oksana';
-
-    const sections = ['morning', 'daytime', 'evening'];
-    let totalCompleted = 0;
-
-    sections.forEach(section => {
-      const stats = getEmployeeSectionStats(employee, section);
-      totalCompleted += stats.completed;
-
-      // Прогресс-бар
-      const bar = document.getElementById(`${key}-${section}-bar`);
-      const text = document.getElementById(`${key}-${section}-text`);
-
-      if (bar && text) {
-        const pct = stats.total > 0 ? (stats.completed / stats.total * 100) : 0;
-        bar.style.width = pct + '%';
-
-        // Цвет в зависимости от заполненности
-        bar.className = 'section-progress-fill';
-        if (pct === 0) bar.classList.add('empty');
-        else if (pct < 100) bar.classList.add('partial');
-
-        text.textContent = `${stats.completed}/${stats.total}`;
-      }
-    });
-
-    // Общий прогресс
-    const totalEl = document.getElementById(`${key}-total`);
-    if (totalEl) {
-      totalEl.textContent = `${totalCompleted}/${TOTAL_TASKS}`;
-      totalEl.className = 'total-number';
-      if (totalCompleted < TOTAL_TASKS) totalEl.classList.add('incomplete');
-    }
-
-    // Невыполненные задачи
-    const incompleteEl = document.getElementById(`${key}-incomplete`);
-    if (incompleteEl) {
-      const allIncomplete = [];
-      sections.forEach(section => {
-        const stats = getEmployeeSectionStats(employee, section);
-        stats.incompleteTasks.forEach(task => {
-          // Проверяем, может другой сотрудник выполнил
-          const data = dayData.tasks[task.id];
-          if (!data) {
-            allIncomplete.push(task);
-          }
-        });
+    const container = document.getElementById(employee.key + '-incomplete');
+    container.replaceChildren();
+    const problems = stats.problems.slice().sort((a, b) => Number(b.failed) - Number(a.failed));
+    if (problems.length) {
+      container.append(node('div', 'incomplete-header', 'Требуют внимания: ' + problems.length));
+      problems.slice(0, 3).forEach(problem => {
+        container.append(node('div', 'incomplete-item',
+          (problem.failed ? 'Не выполнено: ' : 'Нет отметки: ') + problem.task.name));
       });
-
-      if (allIncomplete.length > 0) {
-        incompleteEl.innerHTML = `
-          <div class="incomplete-header">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg>
-            Невыполненные задачи (${allIncomplete.length}):
-          </div>
-          ${allIncomplete.map(t => `<div class="incomplete-item">${t.name}</div>`).join('')}
-        `;
-      } else {
-        incompleteEl.innerHTML = `
-          <div class="incomplete-header" style="color: #22c55e;">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;stroke:#22c55e;"><polyline points="20 6 9 17 4 12"/></svg>
-            Все задачи выполнены!
-          </div>
-        `;
-      }
+      if (problems.length > 3) container.append(node('p', 'card-more', 'Ещё ' + (problems.length - 3) + ' — в подробном отчёте'));
+    } else {
+      container.append(node('div', 'incomplete-header all-done', 'Все личные задачи выполнены'));
     }
 
-    // Обработчик клика для детализации
-    const card = document.getElementById(`${key}-card`);
-    if (card) {
-      // Удаляем старый обработчик
-      card.onclick = () => showDetailModal(employee);
-    }
+    const arrive = entryFor(employee.name, '_arrive');
+    const leave = entryFor(employee.name, '_leave');
+    const workStatus = document.getElementById(employee.key + '-work-status');
+    workStatus.replaceChildren();
+    workStatus.append(node('div', 'work-status-row ' + (arrive ? 'arrived' : 'not-yet'),
+      arrive ? 'Приход: ' + (arrive.timeStr || displayTime(arrive.completedAt)) : 'Приход не отмечен'));
+    let leaveText = 'Уход не отмечен';
+    if (leave) leaveText = 'Уход: ' + (leave.timeStr || displayTime(leave.completedAt));
+    else if (arrive && selectedDate === today()) leaveText = 'На работе · уход не отмечен';
+    workStatus.append(node('div', 'work-status-row ' + (leave ? 'left' : 'not-yet'), leaveText));
   }
 
-  function renderWorkStatus() {
-    const loginIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>`;
-    const logoutIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`;
-
-    EMPLOYEES.forEach(emp => {
-      const key = emp === 'Агнесса' ? 'agnesa' : 'oksana';
-      const el = document.getElementById(`${key}-work-status`);
-      if (!el) return;
-
-      // Читаем из Supabase данных (dayData.tasks) по композитным ключам
-      const arriveData = dayData.tasks[emp + '__arrive'];
-      const leaveData = dayData.tasks[emp + '__leave'];
-
-      let html = '';
-
-      // Приход
-      if (arriveData) {
-        const time = arriveData.timeStr || extractTime(arriveData.completedAt);
-        html += `<div class="work-status-row arrived">${loginIcon} Пришла на работу <span class="status-time">${time}</span></div>`;
-      } else {
-        html += `<div class="work-status-row not-yet">${loginIcon} Не отметилась</div>`;
-      }
-
-      // Уход
-      if (leaveData) {
-        const time = leaveData.timeStr || extractTime(leaveData.completedAt);
-        html += `<div class="work-status-row left">${logoutIcon} Ушла с работы <span class="status-time">${time}</span></div>`;
-      } else {
-        html += `<div class="work-status-row not-yet">${logoutIcon} Ещё на работе</div>`;
-      }
-
-      el.innerHTML = html;
+  function renderCustomers() {
+    const list = document.getElementById('customers-log');
+    const logs = dayData.customersLog.slice().sort((a, b) =>
+      (Date.parse(b.timestamp || b.eventTime) || 0) - (Date.parse(a.timestamp || a.eventTime) || 0));
+    document.getElementById('customers-count').textContent = String(logs.length);
+    list.replaceChildren();
+    if (!logs.length) {
+      list.append(node('li', 'empty-state', 'За эту дату отметок о покупателях нет.'));
+      return;
+    }
+    logs.forEach(log => {
+      const row = node('li', 'journal-entry');
+      row.append(node('span', 'journal-employee', log.employee || 'Сотрудник'),
+        node('span', 'journal-time', log.timeStr || displayTime(log.timestamp || log.eventTime)));
+      list.append(row);
     });
   }
 
-  // --- Модальное окно деталей ---
-
-  function showDetailModal(employee) {
-    const modal = document.getElementById('detail-modal');
-    const title = document.getElementById('detail-title');
-    const tasksContainer = document.getElementById('detail-tasks');
-
-    title.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;display:inline-block;vertical-align:-3px;margin-right:6px;stroke:var(--accent-bright);"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 10h6M9 14h6M9 8h2" /></svg>
-      <span>${employee} — ${formatDateForPicker(selectedDate)}</span>
-    `;
-
-    const sectionNames = {
-      morning: '🌅 До 10:00',
-      daytime: '☀️ В течение дня',
-      evening: '🌙 До 20:00'
-    };
-
-    let html = '';
-
-    ['morning', 'daytime', 'evening'].forEach(section => {
-      html += `<div class="detail-section-title">${sectionNames[section]}</div>`;
-
+  function renderDetails(employee) {
+    document.getElementById('detail-title').textContent = employee.name + ' · ' + displayDate(selectedDate);
+    const container = document.getElementById('detail-tasks');
+    container.replaceChildren();
+    SECTIONS.forEach(section => {
+      container.append(node('h3', 'detail-section-title', SECTION_NAMES[section]));
       TASKS[section].forEach(task => {
-        const compositeKey = employee + '_' + task.id;
-        const data = dayData.tasks[compositeKey];
-        let icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="stroke:var(--text-disabled);"><circle cx="12" cy="12" r="10"/></svg>`;
-        let meta = '';
-        let statusClass = '';
-
-        if (data) {
-          if (data.isFailed) {
-            icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="stroke:var(--error-critical);"><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></svg>`;
-            statusClass = ' style="color: var(--error);"';
-          } else if (data.isLate) {
-            icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="stroke:var(--error-bright);"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" /></svg>`;
-            statusClass = ' style="color: var(--error-bright);"';
-          } else {
-            icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="stroke:var(--success);"><polyline points="20 6 9 17 4 12" /></svg>`;
-          }
-          const time = data.timeStr || extractTime(data.completedAt);
-          meta = `${data.employee} · ${time}`;
-          if (data.isFailed) {
-            meta += ' · <span class="late-badge" style="background: var(--error); color: #080706;">НЕ ВЫПОЛНЕНО</span>';
-            if (data.reason) meta += `<br><small style="color: var(--error);">Причина: ${data.reason}</small>`;
-          } else if (data.isLate) {
-            meta += ' · <span class="late-badge">ОПОЗДАНИЕ</span>';
-          }
-        } else {
-          meta = 'Не выполнено';
-        }
-
-        html += `
-          <div class="detail-task">
-            <span class="detail-status-icon">${icon}</span>
-            <div class="detail-task-info">
-              <div class="detail-task-name"${statusClass}>${task.name}</div>
-              <div class="detail-task-meta">${meta}</div>
-            </div>
-          </div>
-        `;
+        const entry = entryFor(employee.name, task.id);
+        const kind = !entry ? 'pending' : entry.isFailed ? 'failed' : entry.isLate ? 'late' : 'success';
+        const symbols = { pending: '○', failed: '×', late: '!', success: '✓' };
+        const labels = { pending: 'Нет отметки', failed: 'Не выполнено', late: 'Выполнено с опозданием', success: 'Выполнено' };
+        const row = node('div', 'detail-task');
+        const icon = node('span', 'status-symbol ' + kind, symbols[kind]);
+        icon.setAttribute('aria-hidden', 'true');
+        const info = node('div', 'detail-task-info');
+        info.append(node('div', 'detail-task-name', task.name));
+        info.append(node('div', 'detail-task-meta ' + kind, labels[kind] +
+          (entry ? ' · ' + (entry.timeStr || displayTime(entry.completedAt)) : '')));
+        if (entry && entry.isFailed) info.append(node('p', 'detail-reason', 'Причина: ' + (entry.reason || 'не указана')));
+        row.append(icon, info);
+        container.append(row);
       });
     });
+  }
 
-    tasksContainer.innerHTML = html;
+  function openModal(id, employee) {
+    if (activeModal) closeModal(false);
+    returnFocus = document.activeElement;
+    activeModal = id;
+    activeEmployee = employee || null;
+    if (employee) renderDetails(employee);
+    const modal = document.getElementById(id);
     modal.classList.add('active');
-    history.pushState({ modal: 'detail' }, '');
+    modal.setAttribute('aria-hidden', 'false');
+    document.querySelector('.admin-page').inert = true;
+    document.body.classList.add('modal-open');
+    history.pushState({ checklistModal: id }, '');
+    modal.querySelector('button').focus();
   }
 
-  function formatDateForPicker(dateStr) {
-    const parts = dateStr.split('-');
-    return `${parts[2]}.${parts[1]}.${parts[0]}`;
+  function closeModal(goBack = true) {
+    if (!activeModal) return;
+    const id = activeModal;
+    const modal = document.getElementById(id);
+    activeModal = null;
+    activeEmployee = null;
+    document.querySelector('.admin-page').inert = false;
+    document.body.classList.remove('modal-open');
+    if (returnFocus && returnFocus.isConnected) returnFocus.focus();
+    returnFocus = null;
+    modal.classList.remove('active');
+    modal.setAttribute('aria-hidden', 'true');
+    if (goBack && history.state && history.state.checklistModal === id) history.back();
   }
-
-  // --- Навигация по датам ---
 
   function updateDateDisplay() {
-    const display = document.getElementById('selected-date');
-    display.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;margin-right:6px;stroke:var(--accent-bright);"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
-      <span>${formatDateForPicker(selectedDate)}</span>
-    `;
-
-    // Обновляем активные кнопки
-    const todayBtn = document.getElementById('today-btn');
-    const yesterdayBtn = document.getElementById('yesterday-btn');
-    const datePicker = document.getElementById('date-picker');
-
-    todayBtn.classList.toggle('active', selectedDate === getTodayStr());
-    yesterdayBtn.classList.toggle('active', selectedDate === getYesterdayStr());
-    datePicker.value = selectedDate;
+    document.getElementById('selected-date').textContent = '📅 ' + displayDate(selectedDate);
+    document.getElementById('today-btn').classList.toggle('active', selectedDate === today());
+    document.getElementById('yesterday-btn').classList.toggle('active', selectedDate === yesterday());
+    document.getElementById('today-btn').setAttribute('aria-pressed', String(selectedDate === today()));
+    document.getElementById('yesterday-btn').setAttribute('aria-pressed', String(selectedDate === yesterday()));
+    document.getElementById('date-picker').value = selectedDate;
+    document.getElementById('date-picker').max = today();
   }
 
-  function handleDateChange(newDate) {
-    selectedDate = newDate;
+  function selectDate(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value > today()) return;
+    selectedDate = value;
     updateDateDisplay();
     loadDayData();
   }
-
-  // --- Инициализация ---
 
   document.addEventListener('DOMContentLoaded', () => {
-    // Проверка авторизации
-    currentUser = Auth.requireAuth('admin');
-    if (!currentUser) return;
-
-    // Устанавливаем сегодняшнюю дату
-    selectedDate = getTodayStr();
+    if (!Auth.requireAuth('admin')) return;
+    selectedDate = today();
     updateDateDisplay();
-
-    // Навигация по датам
-    document.getElementById('today-btn').addEventListener('click', () => {
-      handleDateChange(getTodayStr());
-    });
-
-    document.getElementById('yesterday-btn').addEventListener('click', () => {
-      handleDateChange(getYesterdayStr());
-    });
-
-    document.getElementById('date-picker').addEventListener('change', (e) => {
-      if (e.target.value) {
-        handleDateChange(e.target.value);
-      }
-    });
-
-    // Кнопка выхода
+    document.getElementById('today-btn').addEventListener('click', () => selectDate(today()));
+    document.getElementById('yesterday-btn').addEventListener('click', () => selectDate(yesterday()));
+    document.getElementById('date-picker').addEventListener('change', event => selectDate(event.target.value));
+    document.getElementById('refresh-btn').addEventListener('click', loadDayData);
     document.getElementById('logout-btn').addEventListener('click', () => Auth.logout());
 
-    // Закрытие модального окна
-    const closeDetail = () => {
-      const m = document.getElementById('detail-modal');
-      if (m.classList.contains('active')) {
-        m.classList.remove('active');
-        return true;
+    EMPLOYEES.forEach(employee => {
+      const card = document.getElementById(employee.key + '-card');
+      if (!card) return;
+      card.addEventListener('click', () => openModal('detail-modal', employee));
+      card.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openModal('detail-modal', employee);
+        }
+      });
+    });
+    document.getElementById('show-instructions-btn').addEventListener('click', () => openModal('instructions-modal'));
+    ['detail', 'instructions'].forEach(name => {
+      document.getElementById(name + '-close').addEventListener('click', () => closeModal());
+      document.getElementById(name + '-modal').addEventListener('click', event => {
+        if (event.target.id === name + '-modal') closeModal();
+      });
+    });
+    document.addEventListener('keydown', event => {
+      if (!activeModal) return;
+      if (event.key === 'Escape') { event.preventDefault(); closeModal(); }
+      if (event.key === 'Tab') {
+        const focusable = [...document.getElementById(activeModal).querySelectorAll('button, a[href], input, textarea, [tabindex="0"]')]
+          .filter(element => !element.disabled && !element.hidden);
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
-      return false;
-    };
-
-    document.getElementById('detail-close').addEventListener('click', () => {
-      if (closeDetail() && history.state && history.state.modal === 'detail') history.back();
     });
+    window.addEventListener('popstate', () => closeModal(false));
 
-    document.getElementById('detail-modal').addEventListener('click', (e) => {
-      if (e.target.id === 'detail-modal') {
-        if (closeDetail() && history.state && history.state.modal === 'detail') history.back();
-      }
+    const updateNetwork = () => document.getElementById('offline-banner').classList.toggle('visible', !navigator.onLine);
+    updateNetwork();
+    window.addEventListener('offline', updateNetwork);
+    window.addEventListener('online', () => { updateNetwork(); loadDayData(); });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) { updateDateDisplay(); loadDayData(); }
     });
-
-    // Отслеживание сети
-    window.addEventListener('online', () => {
-      document.getElementById('offline-banner').classList.remove('visible');
-    });
-    window.addEventListener('offline', () => {
-      document.getElementById('offline-banner').classList.add('visible');
-    });
-
-    // Загрузка данных
     loadDayData();
-
-    // Автообновление каждые 2 минуты
-    refreshTimer = setInterval(() => loadDayData(), CONFIG.ADMIN_REFRESH_INTERVAL);
-
-    // History API — кнопка «Назад»
-    history.replaceState({ page: 'admin' }, '');
-
-    window.addEventListener('popstate', (e) => {
-      if (closeDetail()) return;
-      Auth.logout();
-    });
+    setInterval(() => { if (!document.hidden) { updateDateDisplay(); loadDayData(); } }, CONFIG.ADMIN_REFRESH_INTERVAL);
   });
-
 })();

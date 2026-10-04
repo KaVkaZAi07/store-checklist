@@ -2797,3 +2797,101 @@ body {
   stroke: var(--error-critical);
 }
 
+
+/* Рабочая панель: состояния данных и доступность важнее декоративных эффектов. */
+body.admin-dashboard {
+  background: linear-gradient(rgba(13, 11, 10, .91), rgba(13, 11, 10, .95)), url('../icons/bg_dark.png') center / cover fixed !important;
+}
+.light-theme body.admin-dashboard {
+  background: linear-gradient(rgba(247, 245, 242, .92), rgba(247, 245, 242, .97)), url('../icons/bg_light.png') center / cover fixed !important;
+}
+.admin-dashboard::before, .admin-dashboard::after, .admin-dashboard .cinematic-vignette { display: none; }
+.admin-dashboard .admin-page, .admin-dashboard .admin-header { background: var(--bg-primary) !important; }
+.admin-dashboard .admin-page .employee-summary-card, .admin-dashboard .customers-journal {
+  background: var(--bg-secondary) !important;
+  box-shadow: var(--shadow-sm) !important;
+  backdrop-filter: none !important;
+}
+[hidden] { display: none !important; }
+:focus-visible {
+  outline: 3px solid var(--accent-bright);
+  outline-offset: 4px;
+}
+body.modal-open { overflow: hidden; }
+.data-toolbar { display: flex; align-items: flex-start; gap: 12px; margin-top: 18px; }
+.data-status { flex: 1; min-width: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6; margin: 0; }
+.data-status[data-state="warning"], .data-status[data-state="error"] { color: var(--error-bright); }
+.data-status[data-state="error"] { font-weight: 600; }
+.refresh-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-surface);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.refresh-btn:disabled { opacity: .55; cursor: progress; }
+.admin-page .overview-section { margin-bottom: 0; }
+.admin-page .overview-card { cursor: default; }
+.admin-page .overview-card:hover { transform: none; }
+.admin-page .employee-summary-card { animation: none; box-shadow: var(--shadow-sm); }
+.admin-page .employee-card-name { margin-bottom: 10px; }
+.admin-page .summary-caption { margin: 0 0 16px; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.status-summary { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+.status-pill { padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; line-height: 1.4; }
+.status-pill.success, .status-symbol.success, .detail-task-meta.success, .all-done { color: var(--success); }
+.status-pill.failed, .status-symbol.failed, .detail-task-meta.failed { color: var(--error-critical); }
+.status-pill.late, .status-symbol.late, .detail-task-meta.late { color: var(--error-bright); }
+.status-pill.pending, .status-symbol.pending { color: var(--text-secondary); }
+.section-progress-fill.complete { background: var(--success); box-shadow: none; }
+.section-intro h2 { color: var(--text-primary); font-size: 18px; margin: 8px 0; }
+.section-intro #attention-summary { color: var(--text-primary); font-size: 14px; line-height: 1.6; margin-bottom: 8px; }
+.section-intro .summary-caption { margin-bottom: 0; }
+.card-more { color: var(--text-secondary); font-size: 12px; line-height: 1.5; margin-top: 6px; }
+.card-detail-link { color: var(--accent-bright); font-size: 13px; font-weight: 600; margin-top: 14px; }
+.admin-page .incomplete-item { font-size: 13px; }
+.admin-page .customers-journal-section { padding-bottom: 24px; }
+.customer-log { list-style: none; padding: 0; max-height: 360px; overflow-y: auto; }
+.customer-log .empty-state { padding: 24px 16px; color: var(--text-secondary); }
+.customer-log .journal-entry { gap: 16px; }
+.customer-log .journal-employee { overflow-wrap: anywhere; }
+.customer-log .journal-time { white-space: nowrap; }
+.detail-task-info { min-width: 0; }
+.detail-reason { font-size: 13px; line-height: 1.6; color: var(--text-secondary); margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.detail-task-name { overflow-wrap: anywhere; }
+.status-symbol { display: inline-flex; align-items: center; justify-content: center; width: 22px; min-width: 22px; height: 22px; font-size: 20px; font-weight: 700; }
+.detail-section-title { font-size: 13px; letter-spacing: .2px; color: var(--text-secondary); }
+.admin-page .section-progress-label { font-size: 13px; }
+.admin-page .total-number { color: var(--text-primary); }
+.admin-page .header-top { flex-wrap: wrap; gap: 12px; }
+.admin-page .header-top h1 { font-size: 20px; }
+.admin-page .date-row { flex-wrap: wrap; gap: 10px; }
+.light-theme .date-picker-input { color-scheme: light; }
+.light-theme .status-pill.success, .light-theme .detail-task-meta.success { color: #26723b; }
+.light-theme .status-pill.late, .light-theme .detail-task-meta.late { color: #a34b20; }
+.light-theme .data-status[data-state="warning"], .light-theme .data-status[data-state="error"] { color: #a34b20; }
+.light-theme .card-detail-link { color: #995519; }
+@media (min-width: 900px) {
+  .admin-page { max-width: 880px; }
+  .admin-page .admin-header, .admin-page .summary-section, .admin-page .customers-journal-section { max-width: none; }
+  .admin-page .summary-section, .admin-page .customers-journal-section { padding-left: 24px; padding-right: 24px; }
+  .admin-page .employee-summaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .admin-page .section-intro { grid-column: 1 / -1; }
+}
+@media (max-width: 375px) {
+  .admin-page .employee-summary-card { padding: 18px 14px; }
+  .data-toolbar { flex-wrap: wrap; }
+  .admin-page .date-nav { gap: 8px; }
+  .admin-page .date-picker-input { width: 100%; }
+  .admin-page .section-progress { gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+
+/* The report header remains in document flow, leaving room for the daily summary. */
+.admin-page .admin-header { position: static; }

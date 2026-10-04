@@ -1,271 +1,130 @@
-// ============================================
-// Модуль авторизации
-// ============================================
-
+// Local session metadata is for navigation only; every API call verifies the token on the server.
 const Auth = {
-
-  // Ключи localStorage для сессии
-  KEYS: {
-    userKey: 'checklist_user_key',
-    userName: 'checklist_user_name',
-    userRole: 'checklist_user_role'
-  },
-
-  /**
-   * Получить текущего пользователя
-   * @returns {{ key: string, name: string, role: string } | null}
-   */
+  SESSION_KEY: 'checklist_session_v2',
   getCurrentUser() {
-    const key = localStorage.getItem(this.KEYS.userKey);
-    const name = localStorage.getItem(this.KEYS.userName);
-    const role = localStorage.getItem(this.KEYS.userRole);
-    if (key && name && role) {
-      return { key, name, role };
-    }
-    return null;
+    const session = API._session();
+    const configured = CONFIG.USERS[session?.user?.key];
+    if (!session?.token || !configured || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()) return null;
+    if (session.user.role !== configured.role || session.user.name !== configured.name) return null;
+    return session.user;
   },
-
-  /**
-   * Войти в систему
-   * @param {string} userKey - Ключ пользователя (agnesa/oksana/owner)
-   * @param {string} pin - PIN-код
-   * @returns {{ success: boolean, error?: string }}
-   */
   async login(userKey, pin) {
-    const userConfig = CONFIG.USERS[userKey];
-    if (!userConfig) {
-      return { success: false, error: 'Пользователь не найден' };
-    }
-
-    // Проверяем PIN
-    const result = await API.verifyPin(userConfig.name, pin);
-    if (!result.success) {
-      return { success: false, error: result.error || 'Неверный PIN-код' };
-    }
-
-    // Сохраняем сессию
-    localStorage.setItem(this.KEYS.userKey, userKey);
-    localStorage.setItem(this.KEYS.userName, userConfig.name);
-    localStorage.setItem(this.KEYS.userRole, userConfig.role);
-
-    // Перенаправляем
-    if (userConfig.role === 'admin') {
-      window.location.href = 'admin.html';
-    } else {
-      window.location.href = 'employee.html';
-    }
-
-    return { success: true };
+    if (!CONFIG.USERS[userKey]) return { success: false, error: 'Выберите профиль.' };
+    if (!/^\d{6,12}$/.test(pin)) return { success: false, error: 'Введите PIN из 6–12 цифр.' };
+    try {
+      const result = await API.verifyPin(userKey, pin);
+      if (!result.token || !result.user || !result.expiresAt) throw new Error('Сервер не создал сессию.');
+      API.clearCache();
+      localStorage.setItem(this.SESSION_KEY, JSON.stringify({ token: result.token, user: result.user, expiresAt: result.expiresAt }));
+      ['checklist_user_key', 'checklist_user_name', 'checklist_user_role'].forEach(k => localStorage.removeItem(k));
+      window.location.href = result.user.role === 'admin' ? 'admin.html' : 'employee.html';
+      return { success: true };
+    } catch (error) { return { success: false, error: error.message || 'Не удалось войти. Повторите позже.' }; }
   },
-
-  /**
-   * Выйти из системы
-   */
-  logout() {
-    localStorage.removeItem(this.KEYS.userKey);
-    localStorage.removeItem(this.KEYS.userName);
-    localStorage.removeItem(this.KEYS.userRole);
+  async logout() {
+    const button = document.getElementById('logout-btn');
+    if (button) { button.disabled = true; button.textContent = 'Выходим…'; }
+    const session = API._session();
+    localStorage.removeItem(this.SESSION_KEY);
+    API.clearCache();
+    ['checklist_user_key', 'checklist_user_name', 'checklist_user_role'].forEach(k => localStorage.removeItem(k));
+    // Revoke online before leaving; expiry bounds an offline logout.
+    try { await API.logout(session?.token); } catch { /* Local logout still takes effect. */ }
     window.location.href = 'index.html';
   },
-
-  /**
-   * Проверить авторизацию, перенаправить если не авторизован
-   * @param {string} requiredRole - 'employee' или 'admin'
-   * @returns {{ key: string, name: string, role: string } | null}
-   */
-  requireAuth(requiredRole) {
+  requireAuth(role) {
     const user = this.getCurrentUser();
-    if (!user) {
-      window.location.href = 'index.html';
-      return null;
-    }
-    if (requiredRole && user.role !== requiredRole) {
-      window.location.href = 'index.html';
-      return null;
-    }
+    if (!user || (role && user.role !== role)) { window.location.replace('index.html'); return null; }
+    API._boundToken = API._session().token;
     return user;
   },
-
-  /**
-   * Проверить существующую сессию на странице входа
-   * Если уже авторизован — перенаправить
-   */
   checkExistingSession() {
     const user = this.getCurrentUser();
-    if (user) {
-      if (user.role === 'admin') {
-        window.location.href = 'admin.html';
-      } else {
-        window.location.href = 'employee.html';
-      }
-      return;
-    }
-
-    // Настраиваем страницу входа
+    if (user) { window.location.replace(user.role === 'admin' ? 'admin.html' : 'employee.html'); return; }
+    localStorage.removeItem(this.SESSION_KEY);
     this._setupLoginPage();
   },
-
-  /**
-   * Инициализация страницы входа (обработчики кнопок)
-   */
   _setupLoginPage() {
-    let selectedUserKey = null;
-
-    const pinModal = document.getElementById('pin-modal');
-    const pinModalContent = document.getElementById('pin-modal-content');
-    const pinInput = document.getElementById('pin-input');
-    const pinError = document.getElementById('pin-error');
-    const pinUserName = document.getElementById('pin-user-name');
-    const pinSubmit = document.getElementById('pin-submit');
-    const pinClose = document.getElementById('pin-close');
-
-    if (!pinModal) return; // Не на странице входа
-
-    // Обновление точек-индикаторов
-    const updateDots = () => {
-      const len = pinInput.value.length;
-      const dots = document.querySelectorAll('.pin-dot');
-      dots.forEach((dot, idx) => {
-        if (idx < len) {
-          dot.classList.add('filled');
-        } else {
-          dot.classList.remove('filled');
-        }
-      });
+    const modal = document.getElementById('pin-modal');
+    if (!modal) return;
+    const input = document.getElementById('pin-input');
+    const error = document.getElementById('pin-error');
+    const submit = document.getElementById('pin-submit');
+    const close = document.getElementById('pin-close');
+    let selected = null;
+    let trigger = null;
+    let busy = false;
+    const update = () => {
+      input.value = input.value.replace(/\D/g, '').slice(0, 12);
+      document.getElementById('pin-length').textContent = input.value.length ? 'Введено цифр: ' + input.value.length : 'От 6 до 12 цифр';
+      submit.disabled = busy || input.value.length < 6;
     };
-
-    // Кнопки выбора пользователя
-    document.querySelectorAll('.user-btn').forEach(btn => {
+    const setBusy = (value) => {
+      busy = value;
+      modal.setAttribute('aria-busy', String(value));
+      modal.querySelectorAll('.keypad-btn').forEach(btn => btn.disabled = value);
+      input.disabled = value;
+      close.disabled = value;
+      submit.textContent = value ? 'Проверяем…' : 'Войти';
+      update();
+    };
+    const closeModal = () => {
+      if (busy) return;
+      modal.classList.remove('active');
+      input.value = '';
+      selected = null;
+      trigger?.focus();
+    };
+    document.querySelectorAll('.user-btn').forEach(btn => btn.addEventListener('click', () => {
+      trigger = btn;
+      selected = btn.dataset.user;
+      document.getElementById('pin-user-name').textContent = CONFIG.USERS[selected].name;
+      input.value = '';
+      error.textContent = '';
+      error.classList.remove('visible');
+      modal.classList.add('active');
+      update();
+      input.focus();
+    }));
+    close.addEventListener('click', closeModal);
+    modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+    modal.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { e.preventDefault(); closeModal(); }
+      if (e.key === 'Enter' && e.target === input) { e.preventDefault(); submit.click(); }
+      if (e.key === 'Tab') {
+        const controls = [...modal.querySelectorAll('button:not(:disabled), input:not(:disabled)')].filter(el => el.offsetParent !== null);
+        const first = controls[0], last = controls.at(-1);
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+      }
+    });
+    input.addEventListener('input', () => { error.classList.remove('visible'); update(); });
+    modal.querySelectorAll('.keypad-btn').forEach(btn => {
+      btn.setAttribute('aria-label', btn.dataset.val === 'backspace' ? 'Удалить цифру' : btn.dataset.val === 'clear' ? 'Очистить PIN' : btn.dataset.val);
       btn.addEventListener('click', () => {
-        selectedUserKey = btn.dataset.user;
-        const userConfig = CONFIG.USERS[selectedUserKey];
-        if (userConfig) {
-          pinUserName.textContent = userConfig.name;
-          pinInput.value = '';
-          updateDots();
-          pinError.classList.remove('visible');
-          pinModal.classList.add('active');
-          history.pushState({ modal: 'pin' }, '');
-          setTimeout(() => pinInput.focus(), 100);
-        }
+        if (busy) return;
+        input.value = btn.dataset.val === 'clear' ? '' : btn.dataset.val === 'backspace' ? input.value.slice(0, -1) : input.value + btn.dataset.val;
+        update();
       });
     });
-
-    // Закрыть модалку PIN
-    const closePin = () => {
-      if (pinModal.classList.contains('active')) {
-        pinModal.classList.remove('active');
-        selectedUserKey = null;
-      }
-    };
-
-    pinClose.addEventListener('click', () => {
-      closePin();
-      if (history.state && history.state.modal === 'pin') history.back();
-    });
-
-    pinModal.addEventListener('click', (e) => {
-      if (e.target === pinModal) {
-        closePin();
-        if (history.state && history.state.modal === 'pin') history.back();
-      }
-    });
-
-    // Аппаратная кнопка «Назад»
-    window.addEventListener('popstate', (e) => {
-      closePin();
-    });
-
-    // Отправка PIN
-    const submitPin = async () => {
-      const pin = pinInput.value.trim();
-      if (pin.length !== 4) {
-        pinError.textContent = 'Введите 4 цифры';
-        pinError.classList.add('visible');
-        return;
-      }
-
-      pinSubmit.disabled = true;
-      pinSubmit.textContent = '⏳';
-
-      const result = await Auth.login(selectedUserKey, pin);
-
+    submit.addEventListener('click', async () => {
+      if (busy || !selected || input.value.length < 6) return;
+      setBusy(true);
+      const result = await this.login(selected, input.value);
       if (!result.success) {
-        pinError.textContent = result.error;
-        pinError.classList.add('visible');
-        pinInput.value = '';
-        updateDots();
-        
-        // Shake-анимация при ошибке
-        if (pinModalContent) {
-          pinModalContent.classList.add('shake-error');
-          setTimeout(() => {
-            pinModalContent.classList.remove('shake-error');
-          }, 400);
-        }
-
-        pinInput.focus();
-        pinSubmit.disabled = false;
-        pinSubmit.textContent = 'Войти';
-      }
-    };
-
-    pinSubmit.addEventListener('click', submitPin);
-
-    // Enter для отправки
-    pinInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        submitPin();
+        setBusy(false);
+        error.textContent = result.error;
+        error.classList.add('visible');
+        input.value = '';
+        update();
+        input.focus();
       }
     });
-
-    // Автоматическая отправка при вводе 4 цифр
-    pinInput.addEventListener('input', () => {
-      pinError.classList.remove('visible');
-      updateDots();
-      if (pinInput.value.length === 4) {
-        submitPin();
-      }
-    });
-
-    // Обработка нажатий на экранную клавиатуру PIN-пада
-    document.querySelectorAll('.keypad-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const val = btn.dataset.val;
-        if (!val) return;
-
-        if (val === 'clear') {
-          pinInput.value = '';
-        } else if (val === 'backspace') {
-          pinInput.value = pinInput.value.slice(0, -1);
-        } else if (pinInput.value.length < 4) {
-          pinInput.value += val;
-        }
-
-        pinError.classList.remove('visible');
-        updateDots();
-
-        // Инициируем событие input на скрытом поле
-        pinInput.dispatchEvent(new Event('input'));
-      });
-    });
-
-    // Поддержка аппаратной клавиатуры
-    window.addEventListener('keydown', (e) => {
-      if (!pinModal.classList.contains('active')) return;
-      
-      // Игнорируем если фокус в инпуте и это не Enter/Backspace
-      if (e.key >= '0' && e.key <= '9') {
-        e.preventDefault();
-        if (pinInput.value.length < 4) {
-          pinInput.value += e.key;
-          pinInput.dispatchEvent(new Event('input'));
-        }
-      } else if (e.key === 'Backspace') {
-        e.preventDefault();
-        pinInput.value = pinInput.value.slice(0, -1);
-        pinInput.dispatchEvent(new Event('input'));
-      }
-    });
+    update();
   }
 };
+
+// A profile change in another tab must never leave the previous employee's screen active.
+window.addEventListener('storage', event => {
+  if (event.key === Auth.SESSION_KEY) window.location.replace('index.html');
+});
