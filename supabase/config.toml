@@ -1,0 +1,5 @@
+project_id = "store-checklist"
+
+[functions.checklist-notify]
+# This worker accepts only its private scheduler secret. It is never called by a browser.
+verify_jwt = false

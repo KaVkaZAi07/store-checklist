@@ -7,16 +7,7 @@ const CONFIG = {
   SUPABASE_URL: 'https://feloduzdmjsyuxzohnno.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_jl94eUNinaoBPXBeCacaiw_kVP-idH4',
 
-  // --- Telegram-уведомления владельцу ---
-  TELEGRAM_BOT_TOKEN: '8940299386:AAHWgMWJdSexsiSS87XHt6zJi5MP-LQc-_w',
-  TELEGRAM_OWNER_CHAT_ID: '394774717',
-
-  // PIN-коды пользователей
-  PINS: {
-    'Агнесса': '1111',
-    'Оксана': '2222',
-    'Владелец': '0000'
-  },
+  // PIN и Telegram хранятся только на сервере, см. docs/setup-supabase.md.
 
   // Пользователи системы
   USERS: {

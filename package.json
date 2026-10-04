@@ -1,0 +1,16 @@
+{
+  "name": "store-checklist",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Ежедневный чек-лист магазина",
+  "scripts": {
+    "dev": "node scripts/serve.mjs",
+    "test": "node --test tests/*.test.mjs supabase/tests/*.test.mjs",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@playwright/test": "1.63.0",
+    "agent-browser": "0.38.2"
+  }
+}

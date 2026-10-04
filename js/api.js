@@ -1,519 +1,142 @@
-// ============================================
-// API модуль — связь с Supabase REST API
-// Тот же паттерн, что и в проекте «сайт магазина»:
-// прямые fetch-запросы с anon key, без SDK
-// + Telegram-уведомления владельцу
-// ============================================
-
+// Server RPCs own all writes. Offline data is a read-only snapshot.
 const API = {
-
-  // --- Supabase-хелперы ---
-
-  _baseUrl() {
-    return (CONFIG.SUPABASE_URL || '').replace(/\/+$/, '');
+  _serverOffset: 0,
+  _now() { return Date.now() + this._serverOffset; },
+  _todayKey() { return new Date(this._now()).toLocaleDateString('sv-SE', { timeZone: CONFIG.TIMEZONE }); },
+  _baseUrl() { return (CONFIG.SUPABASE_URL || '').replace(/\/+$/, ''); },
+  _cachePrefix: 'checklist_v2_cache_',
+  _boundToken: null,
+  _session() {
+    try { return JSON.parse(localStorage.getItem('checklist_session_v2') || 'null'); }
+    catch { return null; }
   },
-
-  _anonKey() {
-    return CONFIG.SUPABASE_ANON_KEY || '';
-  },
-
-  _isConfigured() {
-    return Boolean(this._baseUrl() && this._anonKey());
-  },
-
-  _headers(extra) {
-    const key = this._anonKey();
-    return Object.assign({
-      'apikey': key,
-      'Authorization': 'Bearer ' + key,
-      'Content-Type': 'application/json'
-    }, extra || {});
-  },
-
-  // --- Дата / время ---
-
-  _todayKey() {
-    return new Date().toLocaleDateString('sv-SE', { timeZone: CONFIG.TIMEZONE });
-  },
-
-  _nowTimeStr() {
-    return new Date().toLocaleTimeString('ru-RU', {
-      timeZone: CONFIG.TIMEZONE,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-  },
-
-  _currentHour() {
-    return parseInt(new Date().toLocaleTimeString('en-US', {
-      timeZone: CONFIG.TIMEZONE,
-      hour: '2-digit',
-      hour12: false
-    }));
-  },
-
-  // --- localStorage (офлайн-кэш) ---
-
-  _storageKey(date)   { return 'checklist_data_' + date; },
-  _customersKey(date) { return 'checklist_customers_' + date; },
-
-  _getLocalData(date) {
+  _cacheKey(date) { return this._cachePrefix + (this._session()?.user?.key || 'none') + '_' + date; },
+  _pendingVisitKey(date) { return 'checklist_pending_visit_' + (this._session()?.user?.key || '') + '_' + date; },
+  _readCache(date) {
     try {
-      const raw = localStorage.getItem(this._storageKey(date));
-      return raw ? JSON.parse(raw) : {};
-    } catch (e) { return {}; }
+      const value = JSON.parse(localStorage.getItem(this._cacheKey(date)) || 'null');
+      return value && value.date === date && value.tasks && Array.isArray(value.customersLog) ? value : null;
+    } catch { return null; }
   },
-
-  _saveLocalData(date, data) {
-    try { localStorage.setItem(this._storageKey(date), JSON.stringify(data)); } catch (e) {}
+  _writeCache(date, data) {
+    try { localStorage.setItem(this._cacheKey(date), JSON.stringify(data)); } catch { /* Optional cache. */ }
   },
-
-  _getLocalCustomers(date) {
+  clearCache() {
     try {
-      const raw = localStorage.getItem(this._customersKey(date));
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) { return []; }
+      Object.keys(localStorage).filter(k => k.startsWith(this._cachePrefix)).forEach(k => localStorage.removeItem(k));
+    } catch { /* Storage may be unavailable. */ }
   },
-
-  _saveLocalCustomers(date, data) {
-    try { localStorage.setItem(this._customersKey(date), JSON.stringify(data)); } catch (e) {}
-  },
-
-  // --- Telegram-уведомления ---
-
-  async _sendTelegram(text) {
-    if (!CONFIG.TELEGRAM_BOT_TOKEN || !CONFIG.TELEGRAM_OWNER_CHAT_ID) {
-      console.warn('Telegram не настроен в CONFIG');
-      return;
-    }
-    const url = `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`;
+  async _rpc(name, body) {
+    if (!this._baseUrl() || !CONFIG.SUPABASE_ANON_KEY) throw new Error('Подключение к серверу не настроено. Обратитесь к владельцу.');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: CONFIG.TELEGRAM_OWNER_CHAT_ID,
-          text: text,
-          parse_mode: 'HTML'
-        })
+      const response = await fetch(this._baseUrl() + '/rest/v1/rpc/' + name, {
+        method: 'POST', cache: 'no-store', signal: controller.signal,
+        headers: { apikey: CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
       });
-    } catch (e) {
-      console.error('Ошибка отправки уведомления в Telegram:', e);
+      let data;
+      try { data = await response.json(); } catch { throw new Error('Сервер вернул некорректный ответ. Повторите позже.'); }
+      if (!response.ok || data?.success === false) {
+        const error = new Error(data?.error || (response.status === 404 ? 'Сервер ещё не настроен для этой версии. Обратитесь к владельцу.' : 'Сервер не подтвердил операцию. Повторите позже.'));
+        error.code = data?.code || String(response.status);
+        error.retryAfter = data?.retryAfter;
+        throw error;
+      }
+      if (!data || typeof data !== 'object' || data.success !== true) throw new Error('Сервер не подтвердил операцию.');
+      if (data.serverTime && Number.isFinite(Date.parse(data.serverTime))) this._serverOffset = Date.parse(data.serverTime) - Date.now();
+      return data;
+    } catch (error) {
+      if (error.name === 'AbortError') throw new Error('Сервер не ответил вовремя. Обновите данные перед повторной отметкой.');
+      if (error instanceof TypeError) throw new Error('Нет связи с сервером. Отметка не подтверждена — проверьте подключение и обновите данные.');
+      throw error;
+    } finally { clearTimeout(timeout); }
+  },
+  async verifyPin(userKey, pin) { return this._rpc('checklist_login', { p_user_key: userKey, p_pin: pin }); },
+  async _request(action, payload = {}) {
+    const session = this._session();
+    if (this._boundToken && session?.token !== this._boundToken) {
+      const error = new Error('Профиль изменился в другой вкладке. Войдите снова.');
+      error.code = 'SESSION_CHANGED';
+      if (typeof window !== 'undefined') window.location.href = 'index.html';
+      throw error;
+    }
+    if (!session?.token || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()) {
+      localStorage.removeItem('checklist_session_v2');
+      this.clearCache();
+      if (typeof window !== 'undefined') window.location.href = 'index.html';
+      const error = new Error('Сессия завершилась. Войдите снова.');
+      error.code = 'UNAUTHORIZED';
+      throw error;
+    }
+    const token = session.token;
+    try {
+      const result = await this._rpc('checklist_request', { p_token: token, p_action: action, p_payload: payload });
+      if (this._session()?.token !== token) {
+        const error = new Error('Профиль изменился. Обновите страницу.');
+        error.code = 'SESSION_CHANGED';
+        throw error;
+      }
+      return result;
+    } catch (error) {
+      if (['UNAUTHORIZED', 'SESSION_EXPIRED', 'INVALID_SESSION'].includes(error.code)) {
+        if (this._session()?.token !== token) { error.code = 'SESSION_CHANGED'; throw error; }
+        localStorage.removeItem('checklist_session_v2');
+        this.clearCache();
+        if (typeof window !== 'undefined') window.location.href = 'index.html';
+      }
+      throw error;
     }
   },
-
-  // --- Основные API-методы ---
-
-  /**
-   * Проверить PIN-код пользователя
-   * @param {string} username - Имя пользователя (Агнесса / Оксана / Владелец)
-   * @param {string} pin - Введённый PIN-код
-   * @returns {Promise<{ success: boolean, error?: string }>}
-   */
-  async verifyPin(username, pin) {
-    // Внутренняя проверка по конфигурации приложения
-    const expectedPin = CONFIG.PINS[username];
-    if (!expectedPin) {
-      return { success: false, error: 'Пользователь не найден' };
-    }
-    if (expectedPin === pin) {
-      return { success: true };
-    } else {
-      return { success: false, error: 'Неверный PIN-код' };
-    }
-  },
-
-  /**
-   * Получить все данные чек-листа и посетителей за определённую дату
-   * @param {string} date - Дата в формате YYYY-MM-DD
-   * @returns {Promise<{ tasks: object, customersLog: array }>}
-   */
   async getDayData(date) {
-    const localTasks = this._getLocalData(date);
-    const localCustomers = this._getLocalCustomers(date);
-
-    if (!this._isConfigured()) {
-      return { tasks: localTasks, customersLog: localCustomers };
-    }
-
     try {
-      // 1. Запрос выполненных задач
-      const tasksUrl = `${this._baseUrl()}/rest/v1/checklist_entries?date=eq.${date}`;
-      const tasksResponse = await fetch(tasksUrl, {
-        method: 'GET',
-        headers: this._headers()
-      });
-
-      let tasks = {};
-      if (tasksResponse.ok) {
-        const entries = await tasksResponse.json();
-        entries.forEach(entry => {
-          const key = entry.employee + '_' + entry.task_id;
-          tasks[key] = {
-            employee: entry.employee,
-            completedAt: entry.completed_at || entry.created_at,
-            isLate: entry.is_late,
-            isFailed: entry.status === 'failed',
-            reason: entry.reason,
-            timeStr: entry.time_str,
-            section: entry.section,
-            taskName: entry.task_name
-          };
-        });
-        this._saveLocalData(date, tasks);
-      } else {
-        console.warn('Ошибка получения задач с сервера, используем локальный кэш');
-        tasks = localTasks;
-      }
-
-      // 2. Запрос логов посетителей
-      const customersUrl = `${this._baseUrl()}/rest/v1/checklist_customers_log?date=eq.${date}`;
-      const customersResponse = await fetch(customersUrl, {
-        method: 'GET',
-        headers: this._headers()
-      });
-
-      let customersLog = [];
-      if (customersResponse.ok) {
-        const logs = await customersResponse.json();
-        customersLog = logs.map(l => ({
-          employee: l.employee,
-          timestamp: l.event_time || l.created_at,
-          timeStr: l.time_str
-        }));
-        this._saveLocalCustomers(date, customersLog);
-      } else {
-        console.warn('Ошибка получения лога посетителей, используем локальный кэш');
-        customersLog = localCustomers;
-      }
-
-      return { tasks, customersLog };
-
-    } catch (err) {
-      console.error('Ошибка сети при получении данных дня:', err);
-      // Возвращаем локальный кэш при ошибке сети
-      return { tasks: localTasks, customersLog: localCustomers };
-    }
-  },
-
-  /**
-   * Проверить завершённость секции и отправить групповое уведомление в Telegram
-   */
-  _checkAndSendSectionNotification(employee, section, date) {
-    if (section === 'daytime') return;
-
-    const sectionTasks = TASKS[section];
-    if (!sectionTasks) return;
-
-    const data = this._getLocalData(date);
-    
-    // Подсчитываем выполненные и проваленные задачи сотрудника в этой секции
-    const completedList = [];
-    const failedList = [];
-    sectionTasks.forEach(task => {
-      const compositeKey = employee + '_' + task.id;
-      const entry = data[compositeKey];
-      if (entry) {
-        if (entry.isFailed) {
-          failedList.push(entry);
-        } else {
-          completedList.push(entry);
-        }
-      }
-    });
-
-    const totalInSection = sectionTasks.length;
-    const completedCount = completedList.length;
-    const failedCount = failedList.length;
-    const totalDone = completedCount + failedCount;
-
-    if (totalDone === totalInSection) {
-      const isMorning = section === 'morning';
-      const timeStr = this._nowTimeStr();
-      
-      let msg = `${isMorning ? '🌅' : '🌆'} <b>${isMorning ? 'Утренний' : 'Вечерний'} чек-лист завершён!</b>\n`;
-      msg += `👤 <b>Сотрудник:</b> ${employee}\n`;
-      msg += `🕒 <b>Время завершения:</b> ${timeStr}\n`;
-      msg += `✅ Выполнено задач: <b>${completedCount}</b>\n`;
-      msg += `❌ Не выполнено: <b>${failedCount}</b>\n`;
-      
-      if (failedCount > 0) {
-        msg += `\n<b>Невыполненные пункты:</b>\n`;
-        failedList.forEach(item => {
-          msg += `• ${item.taskName} (Причина: <i>${item.reason || 'не указана'}</i>)\n`;
-        });
-      }
-
-      this._sendTelegram(msg);
-    }
-  },
-
-  /**
-   * Отметить задачу как выполненную
-   */
-  async completeTask(employee, taskId, taskName, section) {
-    const date = this._todayKey();
-    const timeStr = this._nowTimeStr();
-    const completedAt = new Date().toISOString();
-
-    // Проверяем опоздание по часам
-    let isLate = false;
-    const currentHour = this._currentHour();
-    if (section === 'morning' && currentHour >= CONFIG.DEADLINES.morning) {
-      isLate = true;
-    } else if (section === 'evening' && currentHour >= CONFIG.DEADLINES.evening) {
-      isLate = true;
-    }
-
-    // Сохраняем в localStorage (всегда, как кэш) — ключ по сотруднику
-    const data = this._getLocalData(date);
-    const compositeKey = employee + '_' + taskId;
-    data[compositeKey] = { employee, completedAt, isLate, section, taskName, timeStr };
-    this._saveLocalData(date, data);
-
-    let serverSuccess = false;
-    if (this._isConfigured()) {
+      const data = await this._request('get_day', { date });
+      if (!data.tasks || typeof data.tasks !== 'object' || !Array.isArray(data.customersLog)) throw new Error('Неверный формат данных сервера.');
       try {
-        const payload = {
-          date,
-          employee,
-          task_id: taskId,
-          task_name: taskName,
-          section,
-          status: 'completed',
-          is_late: isLate,
-          time_str: timeStr,
-          completed_at: completedAt
-        };
-
-        const response = await fetch(`${this._baseUrl()}/rest/v1/checklist_entries`, {
-          method: 'POST',
-          headers: this._headers({ 'Prefer': 'resolution=merge-duplicates' }),
-          body: JSON.stringify(payload)
-        });
-
-        if (response.ok) {
-          serverSuccess = true;
-        } else {
-          console.warn('Сервер не принял запись задачи:', response.status);
-        }
-      } catch (err) {
-        console.error('Ошибка отправки выполнения на сервер:', err);
-      }
+        const pendingKey = this._pendingVisitKey(date);
+        const pendingId = localStorage.getItem(pendingKey);
+        if (pendingId && data.customersLog.some(item => item.id === pendingId)) localStorage.removeItem(pendingKey);
+      } catch { /* Optional retry bookkeeping. */ }
+      const result = { ...data, date, source: 'server', stale: false, lastSyncedAt: new Date().toISOString() };
+      this._writeCache(date, result);
+      return result;
+    } catch (error) {
+      if (['UNAUTHORIZED', 'SESSION_EXPIRED', 'INVALID_SESSION', 'SESSION_CHANGED'].includes(error.code)) throw error;
+      const cached = this._readCache(date);
+      if (!cached) throw error;
+      return { ...cached, source: 'cache', stale: true, error: error.message };
     }
-
-    // Уведомление в Telegram:
-    // Дневные задачи отправляем сразу. Утренние/вечерние — только когда закрыта вся секция.
-    if (section === 'daytime') {
-      let msg = `${isLate ? '⚠️' : '✅'} <b>Выполнено:</b> ${taskName}\n`;
-      msg += `👤 <b>Сотрудник:</b> ${employee}\n`;
-      msg += `🕒 <b>Время:</b> ${timeStr}\n`;
-      if (isLate) {
-        msg += `🔴 <i>Внимание: выполнено после дедлайна (${CONFIG.DEADLINES[section]}:00)!</i>`;
-      }
-      this._sendTelegram(msg);
-    } else {
-      this._checkAndSendSectionNotification(employee, section, date);
-    }
-
-    return { success: true, isLate, timeStr };
   },
-
-  /**
-   * Отменить выполнение задачи
-   */
-  async undoTask(employee, taskId, section) {
-    const date = this._todayKey();
-    const compositeKey = employee + '_' + taskId;
-
-    const localData = this._getLocalData(date);
-    const taskEntry = localData[compositeKey];
-    const taskName = taskEntry ? taskEntry.taskName : taskId;
-
-    // Удаляем из localStorage
-    const data = this._getLocalData(date);
-    delete data[compositeKey];
-    this._saveLocalData(date, data);
-
-    if (this._isConfigured()) {
-      try {
-        const url = `${this._baseUrl()}/rest/v1/checklist_entries?date=eq.${date}&employee=eq.${encodeURIComponent(employee)}&task_id=eq.${encodeURIComponent(taskId)}`;
-        await fetch(url, {
-          method: 'DELETE',
-          headers: this._headers()
-        });
-      } catch (err) {
-        console.error('Ошибка удаления записи с сервера:', err);
-      }
+  async _mutate(action, payload, date) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('Нет подключения. Для сохранения отметки нужен интернет.');
+    const result = await this._request(action, { ...payload, date: date || this._todayKey() });
+    const savedDate = result.date || date || this._todayKey();
+    const cached = this._readCache(savedDate);
+    if (cached) {
+      const employee = this._session()?.user?.name;
+      const taskId = payload.taskId || (payload.status ? '_' + payload.status : null);
+      if (action === 'undo_task' || action === 'undo_work_status') delete cached.tasks[employee + '_' + taskId];
+      else if (taskId && result.entry) cached.tasks[employee + '_' + taskId] = result.entry;
+      else if (action === 'log_customers' && result.entry && !cached.customersLog.some(item => item.id === result.entry.id)) cached.customersLog.push(result.entry);
+      this._writeCache(savedDate, cached);
     }
-
-    // Для утренней и вечерней секций не шлём спам-отмены в Telegram, только для дневных задач
-    if (section === 'daytime') {
-      let msg = `↩️ <b>Отмена выполнения:</b> ${taskName}\n`;
-      msg += `👤 <b>Сотрудник:</b> ${employee}\n`;
-      msg += `🕒 <b>Время отмены:</b> ${this._nowTimeStr()}`;
-      this._sendTelegram(msg);
-    }
-
-    return { success: true };
+    return result;
   },
-
-  /**
-   * Отметить задачу как НЕвыполненную (с указанием причины)
-   */
-  async failTask(employee, taskId, taskName, section, reason) {
-    const date = this._todayKey();
-    const timeStr = this._nowTimeStr();
-    const completedAt = new Date().toISOString();
-
-    // Сохраняем в localStorage
-    const data = this._getLocalData(date);
-    const compositeKey = employee + '_' + taskId;
-    data[compositeKey] = { employee, completedAt, isLate: false, isFailed: true, reason, section, taskName, timeStr };
-    this._saveLocalData(date, data);
-
-    if (this._isConfigured()) {
-      try {
-        const payload = {
-          date,
-          employee,
-          task_id: taskId,
-          task_name: taskName,
-          section,
-          status: 'failed',
-          is_late: false,
-          reason: reason || '',
-          time_str: timeStr,
-          completed_at: completedAt
-        };
-
-        await fetch(`${this._baseUrl()}/rest/v1/checklist_entries`, {
-          method: 'POST',
-          headers: this._headers({ 'Prefer': 'resolution=merge-duplicates' }),
-          body: JSON.stringify(payload)
-        });
-      } catch (err) {
-        console.error('Ошибка отправки проваленной задачи на сервер:', err);
-      }
-    }
-
-    // Уведомление в Telegram:
-    // Дневные задачи отправляем сразу. Утренние/вечерние — только когда закрыта вся секция.
-    if (section === 'daytime') {
-      let msg = `❌ <b>Не выполнено:</b> ${taskName}\n`;
-      msg += `👤 <b>Сотрудник:</b> ${employee}\n`;
-      msg += `🕒 <b>Время:</b> ${timeStr}\n`;
-      msg += `💬 <b>Причина:</b> ${reason || 'не указана'}`;
-      this._sendTelegram(msg);
-    } else {
-      this._checkAndSendSectionNotification(employee, section, date);
-    }
-
-    return { success: true, timeStr };
+  completeTask(employee, taskId, taskName, section, date) { return this._mutate('complete_task', { taskId }, date); },
+  failTask(employee, taskId, taskName, section, reason, date) { return this._mutate('fail_task', { taskId, reason }, date); },
+  undoTask(employee, taskId, section, date) { return this._mutate('undo_task', { taskId }, date); },
+  logWorkStatus(employee, status, date) { return this._mutate('work_status', { status }, date); },
+  undoWorkStatus(employee, status, date) { return this._mutate('undo_work_status', { status }, date); },
+  async logCustomersEvent(employee, date) {
+    const key = this._pendingVisitKey(date || this._todayKey());
+    let eventId;
+    try { eventId = localStorage.getItem(key); } catch { /* Optional storage. */ }
+    if (!eventId) eventId = crypto.randomUUID();
+    try { localStorage.setItem(key, eventId); } catch { /* Same request remains idempotent. */ }
+    const result = await this._mutate('log_customers', { eventId }, date);
+    try { if (localStorage.getItem(key) === eventId) localStorage.removeItem(key); } catch { /* Optional storage. */ }
+    return result;
   },
-
-  /**
-   * Залогировать посетителя
-   */
-  async logCustomersEvent(employee) {
-    const date = this._todayKey();
-    const timeStr = this._nowTimeStr();
-    const eventTime = new Date().toISOString();
-
-    // Сохраняем локально
-    const localCustomers = this._getLocalCustomers(date);
-    localCustomers.push({ employee, timestamp: eventTime, timeStr });
-    this._saveLocalCustomers(date, localCustomers);
-
-    if (this._isConfigured()) {
-      try {
-        const payload = {
-          date,
-          employee,
-          time_str: timeStr,
-          event_time: eventTime
-        };
-
-        await fetch(`${this._baseUrl()}/rest/v1/checklist_customers_log`, {
-          method: 'POST',
-          headers: this._headers(),
-          body: JSON.stringify(payload)
-        });
-      } catch (err) {
-        console.error('Ошибка отправки лога покупателей на сервер:', err);
-      }
-    }
-
-    return { success: true, timeStr };
-  },
-
-  /**
-   * Зафиксировать приход или уход с работы
-   */
-  async logWorkStatus(employee, status) {
-    const isArrive = status === 'arrive';
-    const timeStr = this._nowTimeStr();
-    const date = this._todayKey();
-    const taskId = isArrive ? '_arrive' : '_leave';
-    const taskName = isArrive ? 'Я на работе' : 'Ушла с работы';
-    
-    let msg = ``;
-    if (isArrive) {
-      msg = `🌅 <b>${employee} пришла на работу!</b>\n🕒 <b>Время прибытия:</b> ${timeStr}`;
-    } else {
-      msg = `🌆 <b>${employee} ушла с работы!</b>\n🕒 <b>Время ухода:</b> ${timeStr}`;
-    }
-    
-    await this._sendTelegram(msg);
-
-    // Сохраняем в Supabase для отображения в админке
-    if (this._isConfigured()) {
-      try {
-        const payload = {
-          date,
-          employee,
-          task_id: taskId,
-          task_name: taskName,
-          section: 'status',
-          status: 'completed',
-          is_late: false,
-          time_str: timeStr,
-          completed_at: new Date().toISOString()
-        };
-        await fetch(`${this._baseUrl()}/rest/v1/checklist_entries`, {
-          method: 'POST',
-          headers: this._headers({ 'Prefer': 'resolution=merge-duplicates' }),
-          body: JSON.stringify(payload)
-        });
-      } catch (err) {
-        console.error('Ошибка сохранения статуса в Supabase:', err);
-      }
-    }
-
-    return { success: true, timeStr };
-  },
-
-  /**
-   * Отменить отметку прихода/ухода
-   */
-  async undoWorkStatus(employee, status) {
-    const date = this._todayKey();
-    const taskId = status === 'arrive' ? '_arrive' : '_leave';
-
-    if (this._isConfigured()) {
-      try {
-        const url = `${this._baseUrl()}/rest/v1/checklist_entries?date=eq.${date}&employee=eq.${encodeURIComponent(employee)}&task_id=eq.${encodeURIComponent(taskId)}`;
-        await fetch(url, {
-          method: 'DELETE',
-          headers: this._headers()
-        });
-      } catch (err) {
-        console.error('Ошибка удаления статуса из Supabase:', err);
-      }
-    }
-
-    await this._sendTelegram(`↩️ <b>Отмена:</b> ${employee} отменил(а) отметку «${status === 'arrive' ? 'Я на работе' : 'Ушла с работы'}»`);
-    return { success: true };
-  }
+  async logout(token) { if (token) return this._rpc('checklist_logout', { p_token: token }); }
 };

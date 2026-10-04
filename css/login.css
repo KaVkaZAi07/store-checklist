@@ -1,0 +1,35 @@
+/* A readable sign-in card on both phone and desktop. */
+body { background: radial-gradient(ellipse at top, #252237, #0e1119 65%) !important; }
+.light-theme body { background: radial-gradient(ellipse at top, #fff4e5, #f6f4f0 65%) !important; }
+.login-container { min-height: 100svh; padding: 84px 24px 40px; }
+.legacy-recovery { max-width: 360px; margin-top: 20px; padding: 16px; border: 1px solid var(--accent-bright); border-radius: 14px; font-size: 13px; text-align: left; }
+.legacy-recovery p { margin-bottom: 12px; }
+#pin-modal { padding: 20px; overflow-y: auto; background: rgba(6, 9, 16, .9) !important; }
+#pin-modal .pin-modal-content {
+  display: block; position: relative; width: min(100%, 380px); max-height: calc(100svh - 40px);
+  overflow-y: auto; margin: auto; padding: 28px 24px 24px; border-radius: 24px;
+  border: 1px solid var(--border-subtle, #48413a); background: #141822; text-align: center;
+}
+#pin-modal .pin-close { position: absolute; top: 16px; left: 16px; width: 40px; height: 40px; }
+#pin-modal h2 { margin: 44px 0 8px; font-size: 24px; }
+#pin-modal .pin-user-name { margin-bottom: 14px; }
+#pin-length { font-size: 13px; color: var(--text-secondary); margin: 8px 0; }
+#pin-modal #pin-input {
+  border: 1px solid #797166; border-radius: 10px; background: #202633; color: #fff;
+  font: inherit; font-size: 22px; letter-spacing: 5px; text-align: center; padding: 10px; margin-bottom: 16px;
+}
+#pin-modal .pin-keypad { gap: 8px; max-width: 280px; }
+#pin-modal .keypad-btn { width: 60px; height: 52px; border-radius: 12px; }
+#pin-modal .keypad-btn .letters { display: none; }
+#pin-modal #pin-submit { display: block; width: 100%; min-height: 48px; margin-top: 12px; border: none; border-radius: 10px; background: #f0b46b; color: #201911; font: 700 16px inherit; cursor: pointer; }
+#pin-modal #pin-submit:disabled { opacity: .5; cursor: default; }
+#pin-modal .pin-error { height: auto; min-height: 0; margin: 0; }
+#pin-modal .pin-error.visible { margin-top: 14px; line-height: 1.5; }
+.light-theme #pin-modal .pin-modal-content { background: #fffaf3; }
+.light-theme #pin-modal #pin-input { background: #fff; color: #27231c; }
+@media (max-height: 650px) {
+  #pin-modal .pin-modal-content { padding: 16px 20px; }
+  #pin-modal h2 { margin-top: 38px; }
+  #pin-modal .keypad-btn { height: 42px; }
+  #pin-modal .pin-keypad { gap: 4px; }
+}

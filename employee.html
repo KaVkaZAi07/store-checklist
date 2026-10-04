@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="description" content="Ежедневный контроль — чек-лист сотрудника">
+  <meta name="description" content="Ежедневный чек-лист сотрудника магазина">
   <meta name="theme-color" content="#080706">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -11,213 +11,84 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="icon" type="image/png" href="icons/icon-192.png">
   <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/employee.css">
   <script src="js/theme.js"></script>
-  <title>Контроль — Задачи</title>
+  <title>Моя смена — Ежедневный контроль</title>
 </head>
-<body>
-  <!-- Cinematic Vignette Overlay -->
-  <div class="cinematic-vignette"></div>
-
+<body class="employee-view">
+  <a class="skip-link" href="#shift-content">К задачам</a>
   <div class="employee-page">
     <header class="employee-header">
       <div class="header-top">
-        <h1>Ежедневный контроль</h1>
+        <div><p class="brand-caption">Империя Обуви · Adalaniy Kids</p><h1>Моя смена</h1></div>
         <div class="header-info">
           <span class="employee-name-display" id="employee-name"></span>
-          <div class="theme-switch" id="theme-toggle" role="button" aria-label="Переключить тему">
-            <div class="switch-thumb"></div>
-            <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="5"></circle>
-              <line x1="12" y1="1" x2="12" y2="3"></line>
-              <line x1="12" y1="21" x2="12" y2="23"></line>
-              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-              <line x1="1" y1="12" x2="3" y2="12"></line>
-              <line x1="21" y1="12" x2="23" y2="12"></line>
-              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-            </svg>
-            <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-            </svg>
-          </div>
-          <button class="btn-outline" id="logout-btn">Выйти</button>
+          <button type="button" class="theme-switch" id="theme-toggle" aria-label="Переключить светлую и тёмную тему">
+            <span class="switch-thumb"></span>
+            <svg class="sun-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/></svg>
+            <svg class="moon-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 13a9 9 0 1 1-10-10 7 7 0 0 0 10 10z"/></svg>
+          </button>
+          <button type="button" class="btn-outline" id="logout-btn">Выйти</button>
         </div>
       </div>
-      <div class="date-row">
-        <div class="date-display" id="current-date"></div>
-        <button class="header-instructions-btn" id="show-instructions-btn" aria-label="Инструкция для сотрудников">
-          <svg class="sparkles-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 3c.13 0 .26.3.39.9l1.11 5.1c.1.4.3.6.6.7l5.1 1.11c.6.13.9.26.9.39s-.3.26-.9.39l-5.1 1.11c-.3.1-.5.3-.6.7l-1.11 5.1c-.13.6-.26.9-.39.9s-.26-.3-.39-.9l-1.11-5.1c-.1-.4-.3-.6-.6-.7l-5.1-1.11c-.6-.13-.9-.26-.9-.39s.3-.26.9-.39l5.1-1.11c.3-.1.5-.3.6-.7l1.11-5.1c.13-.6.26-.9.39-.9z" fill="currentColor" stroke="none"/>
-            <path d="M5 3c.06 0 .12.14.18.4l.5 2.3c.04.18.14.28.3.3l2.3.5c.26.06.4.12.4.18s-.14.12-.4.18l-2.3.5c-.18.04-.28.14-.3.3l-.5 2.3c-.06.26-.12.4-.18.4s-.12-.14-.18-.4l-.5-2.3c-.04-.18-.14-.28-.3-.3l-2.3-.5c-.26-.06-.4-.12-.4-.18s.14-.12.4-.18l2.3-.5c.18-.04.28-.14.3-.3l.5-2.3c.06-.26.12-.4.18-.4z" fill="currentColor" stroke="none"/>
-          </svg>
-          Инструкция для работников
-        </button>
-      </div>
+      <div class="date-row"><p class="date-display" id="current-date"></p><button type="button" class="header-instructions-btn" id="show-instructions-btn">Как пользоваться</button></div>
     </header>
-
-    <!-- Circular Progress -->
-    <div class="progress-section">
-      <div class="circular-progress">
-        <svg width="140" height="140" viewBox="0 0 140 140">
-          <defs>
-            <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#C9782E"/>
-              <stop offset="50%" stop-color="#D88A32"/>
-              <stop offset="100%" stop-color="#FFB85C"/>
-            </linearGradient>
-          </defs>
-          <circle class="progress-ring-bg" cx="70" cy="70" r="52"/>
-          <circle class="progress-ring-fill" id="progress-ring" cx="70" cy="70" r="52"/>
-        </svg>
-        <div class="progress-center">
-          <div class="progress-number" id="progress-number">0</div>
-          <div class="progress-label">из 19</div>
-        </div>
-      </div>
-      <div class="progress-text" id="progress-text">Прогресс дня</div>
-    </div>
-
-    <!-- Кнопка прихода на работу -->
-    <div class="work-status-container top-status">
-      <button class="status-btn arrive-btn" id="arrive-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-          <polyline points="10 17 15 12 10 7" />
-          <line x1="15" y1="12" x2="3" y2="12" />
-        </svg>
-        <span>Я на работе</span>
-      </button>
-    </div>
-
-    <!-- Утренние задачи -->
-    <section class="section-block">
-      <div class="section-card">
-        <div class="section-card-header">
-          <div class="section-card-title">
-            <div class="section-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2v3M4.2 4.2l2.1 2.1M1 12h3M20 12h3M17.7 6.3l2.1-2.1M12 9a6 6 0 0 1 6 6H6a6 6 0 0 1 6-6zM2 20h20" />
-              </svg>
-            </div>
-            <h2>До 10:00</h2>
+    <main id="shift-content" class="shift-content">
+      <div class="sync-row"><p id="sync-status" class="data-status" role="status" aria-live="polite">Загружаем отметки…</p><button type="button" id="refresh-btn" class="btn-outline refresh-btn">Обновить</button></div>
+      <p id="offline-banner" class="employee-offline" role="status" hidden>Нет подключения. Можно просматривать сохранённые отметки. Для новых отметок нужен интернет.</p>
+      <section class="shift-overview" aria-labelledby="overview-title">
+        <div class="overview-heading">
+          <div><p class="eyebrow">План на сегодня</p><h2 id="overview-title">Каждая задача — вовремя</h2></div>
+          <div class="circular-progress" aria-hidden="true">
+            <svg width="140" height="140" viewBox="0 0 140 140"><defs><linearGradient id="progressGradient"><stop offset="0%" stop-color="#C9782E"/><stop offset="100%" stop-color="#FFB85C"/></linearGradient></defs><circle class="progress-ring-bg" cx="70" cy="70" r="52"/><circle class="progress-ring-fill" id="progress-ring" cx="70" cy="70" r="52"/></svg>
+            <div class="progress-center"><div class="progress-number" id="progress-number">0</div><div class="progress-label" id="progress-total">из 19</div></div>
           </div>
-          <span class="section-count-badge" id="morning-count">0/9</span>
         </div>
-        <div class="section-card-subtitle">Утреннее открытие магазина</div>
-        <div class="tasks-list" id="morning-tasks"></div>
-      </div>
-    </section>
-
-    <!-- Дневные задачи -->
-    <section class="section-block">
-      <div class="section-card">
-        <div class="section-card-header">
-          <div class="section-card-title">
-            <div class="section-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="5" />
-                <path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" />
-              </svg>
-            </div>
-            <h2>В течение дня</h2>
-          </div>
-          <span class="section-count-badge" id="daytime-count">0/2</span>
+        <p class="progress-text" id="progress-text" role="status">Отмечайте задачи сразу после выполнения.</p>
+        <dl class="shift-metrics"><div><dt>Выполнено</dt><dd id="count-done">0</dd></div><div><dt>Не выполнено</dt><dd id="count-failed">0</dd></div><div><dt>Без отметки</dt><dd id="count-remaining">19</dd></div></dl>
+      </section>
+      <section class="shift-status-panel" aria-labelledby="arrival-title">
+        <h2 id="arrival-title" class="visually-hidden">Начало смены</h2><button type="button" class="status-btn arrive-btn" id="arrive-btn" disabled><span>Я на работе</span></button><div id="arrive-feedback" class="work-status-feedback"></div>
+      </section>
+      <nav class="section-nav" aria-label="Разделы чек-листа"><a href="#morning-section">Утро <span>09</span></a><a href="#daytime-section">День <span>02</span></a><a href="#evening-section">Вечер <span>08</span></a></nav>
+      <section class="section-block" id="morning-section" aria-labelledby="morning-title">
+        <div class="section-card"><div class="section-card-header"><h2 id="morning-title">Утро · до 10:00</h2><span class="section-count-badge" id="morning-count">0/9</span></div><p class="section-card-subtitle">Подготовьте магазин к открытию, затем подтвердите чек-лист.</p><div class="tasks-list" id="morning-tasks" aria-busy="true"></div></div>
+      </section>
+      <section class="section-block" id="daytime-section" aria-labelledby="daytime-title">
+        <div class="section-card">
+          <div class="section-card-header"><h2 id="daytime-title">В течение дня</h2><span class="section-count-badge" id="daytime-count">0/2</span></div><p class="section-card-subtitle">Соблюдайте эти правила при каждом визите покупателей.</p><div class="tasks-list" id="daytime-tasks" aria-busy="true"></div>
+          <div class="customers-panel"><h3>Визиты покупателей</h3><p>Один вход покупателя или группы — одна отметка. Это журнал визитов, а не количество людей.</p><button type="button" id="customers-btn" class="complete-btn" disabled>+ Записать визит</button><p id="customers-summary" role="status">Сегодня вы отметили: 0</p><ul id="customers-log" class="customer-log" aria-label="Ваши последние визиты за сегодня"></ul></div>
         </div>
-        <div class="section-card-subtitle">Контроль в рабочее время</div>
-        <div class="tasks-list" id="daytime-tasks"></div>
-      </div>
+      </section>
+      <section class="section-block" id="evening-section" aria-labelledby="evening-title">
+        <div class="section-card"><div class="section-card-header"><h2 id="evening-title">Вечер · до 20:00</h2><span class="section-count-badge" id="evening-count">0/8</span></div><p class="section-card-subtitle">Завершите дела и проверьте магазин перед уходом.</p><div class="tasks-list" id="evening-tasks" aria-busy="true"></div></div>
+      </section>
+      <section class="shift-status-panel end-of-shift" aria-labelledby="departure-title"><h2 id="departure-title" class="visually-hidden">Завершение смены</h2><button type="button" class="status-btn leave-btn" id="leave-btn" disabled><span>Завершить смену</span></button><div id="leave-feedback" class="work-status-feedback"></div><p class="shift-footnote">Отметки сохраняются после завершения смены. Новый чек-лист начинается в полночь по московскому времени.</p></section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="fail-modal" class="pin-modal" hidden>
+    <section class="pin-modal-content" role="dialog" aria-modal="true" aria-labelledby="fail-title" aria-describedby="fail-task-name" tabindex="-1">
+      <button type="button" class="dialog-close" id="fail-close" aria-label="Закрыть">×</button><h2 id="fail-title">Не выполнено</h2><p id="fail-task-name"></p>
+      <form id="fail-form"><label for="fail-reason">Что помешало выполнить задачу?</label><textarea id="fail-reason" name="reason" rows="4" minlength="3" maxlength="500" required placeholder="Например: телевизор не включается"></textarea><p class="dialog-help">Причину увидит руководитель. От 3 до 500 символов.</p><p id="fail-error" class="form-error" role="alert"></p><button type="submit" id="fail-submit" class="complete-btn">Сохранить причину</button></form>
     </section>
-
-    <!-- Вечерние задачи -->
-    <section class="section-block">
-      <div class="section-card">
-        <div class="section-card-header">
-          <div class="section-card-title">
-            <div class="section-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-              </svg>
-            </div>
-            <h2>До 20:00</h2>
-          </div>
-          <span class="section-count-badge" id="evening-count">0/8</span>
-        </div>
-        <div class="section-card-subtitle">Вечернее закрытие магазина</div>
-        <div class="tasks-list" id="evening-tasks"></div>
-      </div>
+  </div>
+  <div id="instructions-modal" class="pin-modal" hidden>
+    <section class="pin-modal-content instruction-modal-content" role="dialog" aria-modal="true" aria-labelledby="instructions-title" tabindex="-1">
+      <button type="button" class="dialog-close" id="instructions-close" aria-label="Закрыть">×</button><h2 id="instructions-title">Как работать с чек-листом</h2>
+      <ol class="instruction-steps">
+        <li>В начале смены нажмите <strong>«Я на работе»</strong>. Время сохраняется в журнале руководителя.</li>
+        <li>Отмечайте <strong>«Выполнено»</strong> сразу после выполнения. Если не получилось, выберите <strong>«Не выполнено»</strong> и укажите причину.</li>
+        <li>Утренние задачи завершите до <strong>10:00</strong>, вечерние — до <strong>20:00</strong> по Москве. Отметка после срока сохранится с опозданием.</li>
+        <li>Подтверждение утреннего или вечернего чек-листа доступно, когда у всех предыдущих задач раздела есть отметка. Задачи с причиной остаются невыполненными.</li>
+        <li>Дневные правила соблюдайте при каждом визите. Кнопка <strong>«Записать визит»</strong> добавляет отдельное событие в журнал.</li>
+        <li>Ошибочную отметку можно отменить в течение <strong>60 секунд</strong>, в том числе после перезагрузки. Чтобы отменить задачу в подтверждённом разделе, сначала отмените подтверждение.</li>
+        <li>Перед уходом нажмите <strong>«Завершить смену»</strong>. Все отметки останутся в журнале.</li>
+        <li>Без интернета доступны сохранённые данные. Новые отметки появятся только после успешного сохранения на сервере.</li>
+      </ol>
     </section>
-
-    <!-- Кнопка ухода с работы -->
-    <div class="work-status-container bottom-status">
-      <button class="status-btn leave-btn" id="leave-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-          <polyline points="16 17 21 12 16 7" />
-          <line x1="21" y1="12" x2="9" y2="12" />
-        </svg>
-        <span>Ушла с работы</span>
-      </button>
-    </div>
-
   </div>
-
-  <div id="toast" class="toast"></div>
-  <div id="offline-banner" class="offline-banner">⚠️ Нет подключения</div>
-
-  <!-- Wish Modal -->
-  <div id="wish-modal" class="pin-modal">
-    <div class="pin-modal-content wish-modal-content">
-      <button class="wish-close-btn" id="wish-close">✕</button>
-      <div class="wish-emoji-container">
-        <div class="wish-emoji" id="wish-emoji">☀️</div>
-      </div>
-      <h2 id="wish-title">Доброе утро!</h2>
-      <p class="wish-text" id="wish-text">Желаем вам хорошего дня!</p>
-      <div class="wish-progress-container">
-        <div class="wish-progress-bar" id="wish-progress-bar"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Instructions Modal -->
-  <div id="instructions-modal" class="pin-modal">
-    <div class="pin-modal-content instruction-modal-content">
-      <button class="instruction-close-btn" id="instructions-close">✕</button>
-      <h2>📖 Инструкция для сотрудников</h2>
-      <div class="instruction-text">
-        <p>Добро пожаловать в систему контроля «Империя Обуви & Adalaniy Kids»! Пожалуйста, ознакомьтесь с правилами работы:</p>
-        <ol>
-          <li>🌅 <b>До 10:00</b> — пошагово выполните первые <b>9 утренних пунктов</b>.</li>
-          <li>☀️ <b>В течение дня</b> — выполните <b>2 дневных пункта</b>.</li>
-          <li>🌆 <b>До 20:00</b> — выполните последние <b>8 вечерних пунктов</b>.</li>
-          <li>🔔 <b>Мгновенные уведомления:</b> при нажатии кнопки <b>✓ Выполнено</b> в Telegram руководителя сразу отправляется отчёт с точным временем (до секунды).<br><span style="color: #FF4444; font-weight: 800; display: block; margin-top: 6px; padding: 8px 12px; background: rgba(255,68,68,0.08); border-left: 3px solid #FF4444; border-radius: 4px;">⚠️ ОЧЕНЬ ВАЖНО: отмечайте задачи только тогда, когда вы их выполнили! Не нажимайте всё разом в конце дня!</span></li>
-          <li>❌ <b>Если пункт не выполнен:</b> нажмите на <b>крестик (✕)</b> и напишите причину, почему задача не была выполнена. Этот отчёт также мгновенно отправится руководителю.</li>
-          <li>🌗 <b>День / Ночь:</b> для вашего удобства в верхнем правом углу есть переключатель темы (Солнце / Луна), вы можете переключать его по вкусу.</li>
-          <li>🏢 <b>Я на работе / Ушла с работы:</b> в начале смены нажмите <b>«Я на работе»</b>, а в конце — <b>«Ушла с работы»</b>. Точное время фиксируется и отправляется руководителю. Если нажали случайно — можно <b>отменить в течение 60 секунд</b>.</li>
-        </ol>
-      </div>
-    </div>
-  </div>
-
-  <script src="js/config.js"></script>
-  <script src="js/api.js"></script>
-  <script src="js/auth.js"></script>
-  <script src="js/employee.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-
-    // Instructions Modal Handlers
-    const instModal = document.getElementById('instructions-modal');
-    const showBtn = document.getElementById('show-instructions-btn');
-    const closeBtn = document.getElementById('instructions-close');
-    if (showBtn && instModal && closeBtn) {
-      showBtn.addEventListener('click', () => instModal.classList.add('active'));
-      closeBtn.addEventListener('click', () => instModal.classList.remove('active'));
-      instModal.addEventListener('click', (e) => {
-        if (e.target === instModal) instModal.classList.remove('active');
-      });
-    }
-  </script>
+  <script src="js/config.js"></script><script src="js/api.js"></script><script src="js/auth.js"></script><script src="js/employee.js"></script>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});</script>
 </body>
 </html>

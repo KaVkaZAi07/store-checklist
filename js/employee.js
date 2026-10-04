@@ -1,759 +1,471 @@
-// ============================================
-// Логика страницы сотрудника
-// ============================================
-
-(function() {
+// Employee records are authoritative only after the API confirms the write.
+(function () {
   'use strict';
 
-  // --- Состояние ---
-  let currentUser = null;
-  let completedTasks = {};
-  let customersLog = [];
-  let undoTimers = new Map(); // taskId -> { timerId, expireAt }
-  let refreshTimer = null;
+  const SECTIONS = ['morning', 'daytime', 'evening'];
+  const CONFIRMATIONS = { morning: 'm9', evening: 'e8' };
+  const busy = new Set();
+  let user, activeDate;
+  let entries = {};
+  let customers = [];
+  let source = 'loading';
+  let lastSyncedAt = null;
+  let loading = false;
+  let revision = 0;
+  let reloadNeeded = false;
+  let toastTimer;
+  let activeModal = null;
+  let focusBeforeModal = null;
+  let failureTask = null;
+  let customerCooldown = 0;
 
-  // Списки пожеланий (по 10 вариантов)
-  const MORNING_WISHES = [
-    "Доброго утра! Пусть этот день принесет много улыбок и отличных продаж! ☀️",
-    "Прекрасного дня! Ты делаешь этот магазин лучшим. Удачи сегодня! ✨",
-    "С добрым утром! Желаем неиссякаемой энергии и отличного настроения! 💫",
-    "Продуктивного и легкого дня! Пусть каждый покупатель уходит с улыбкой! 🛍️",
-    "Удачного старта! Пусть сегодня все задачи решаются легко и быстро! 🚀",
-    "Чудесного дня! Сияй, вдохновляй и радуй наших любимых покупателей! 🌟",
-    "Привет! Желаем море позитива, здоровья и прекрасного настроения сегодня! 🍀",
-    "Доброго и успешного дня! Пусть он будет наполнен приятными моментами! 🌸",
-    "С началом нового дня! Пусть работа будет в радость, а результаты радуют! 🏆",
-    "Энергичного и яркого дня! Желаем отличной атмосферы и больших чеков! 💎"
-  ];
+  const byId = id => document.getElementById(id);
+  const today = () => typeof API._todayKey === 'function' ? API._todayKey() : new Date().toLocaleDateString('sv-SE', { timeZone: CONFIG.TIMEZONE });
+  const key = id => user.name + '_' + id;
+  const entry = id => entries[key(id)];
+  const canWrite = () => source === 'server' && navigator.onLine;
 
-  const EVENING_WISHES = [
-    "Хорошего вечера! Спасибо за отличную работу сегодня. Отдыхай с удовольствием! 🌆",
-    "Прекрасного отдыха! Ты сегодня отлично постаралась, время восстановить силы! 🌙",
-    "Приятного вечера! Пусть домашний уют подарит тебе тепло и покой! 🏡",
-    "Спасибо за твой труд! Желаем уютного, спокойного и расслабряющего вечера! ✨",
-    "Рабочий день позади! Пусть этот вечер принесет только радость и отдых! 🍕",
-    "Отличного вечера! Наслаждайся свободным временем и набирайся сил! 💫",
-    "Заслуженный отдых! Спасибо за преданность делу и прекрасный день! 🥇",
-    "Хорошего и мирного вечера! Пусть все заботы дня растают без следа! 🌌",
-    "Приятного завершения дня! Проведи это время в окружении любимых людей! ☕",
-    "Свобода! Желаем чудесного вечера, крепкого сна и отличного настроения! 🛌"
-  ];
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
 
-  let wishModalTimer = null;
+  function button(text, className, handler, disabled = false) {
+    const node = element('button', className, text);
+    node.type = 'button';
+    node.disabled = disabled;
+    node.addEventListener('click', handler);
+    return node;
+  }
 
-  // Иконки задач (Кастомные SVG-строки)
-  const TASK_ICONS = {
-    m1: `<svg viewBox="0 0 24 24"><path d="M5 3H19V21H5V3Z" /><path d="M14 12H15" /><path d="M2 21H22" /></svg>`, // передняя дверь
-    m2: `<svg viewBox="0 0 24 24"><path d="M5 3H19V21H5V3Z" /><path d="M14 12H15" /><path d="M2 21H22" /></svg>`, // задняя дверь
-    m3: `<svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2" /><circle cx="12" cy="7" r="2" /><circle cx="12" cy="15" r="4" /></svg>`, // колонка
-    m4: `<svg viewBox="0 0 24 24"><path d="M18 10V6a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v4a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4Z" /><path d="M12 14v4a2 2 0 0 0 2 2h4" /><path d="M9 2v2" /><path d="M15 2v2" /></svg>`, // зарядка
-    m5: `<svg viewBox="0 0 24 24"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5zM5 16l1 3 3 1-3 1-1 3-1-3-3-1 3-1z" /></svg>`, // лишние провода
-    m6: `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="13" rx="2" /><path d="M12 16v4M8 20h8M7 3l4 4M17 3l-4 4" /></svg>`, // включить тв
-    m7: `<svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11L12 22V2l5.5 4.5-11 11" /></svg>`, // Bluetooth
-    m8: `<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>`, // музыка
-    m9: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 10h6M9 14h6M9 8h2" /></svg>`, // утренний чек-лист
-    d1: `<svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2" /><path d="M12 18h.01M1 1l22 22" /></svg>`, // убрать телефоны
-    d2: `<svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>`, // быть внимательными
-    e1: `<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5" /><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37zM17.5 6.5h.01" /></svg>`, // Instagram
-    e2: `<svg viewBox="0 0 24 24"><path d="M21.5 2L1.5 9.75l7.5 3.25 3.25 7.5zM9 13l4-4" /></svg>`, // Telegram
-    e3: `<svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /></svg>`, // WhatsApp
-    e4: `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="13" rx="2" /><path d="M12 16v4M8 20h8M7 3l4 4M17 3l-4 4" /></svg>`, // выключить тв
-    e5: `<svg viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .6 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5h6zM9 18h6M10 22h4" /></svg>`, // выключить свет
-    e6: `<svg viewBox="0 0 24 24"><path d="M10 22V12H7V8a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v4h-3v10M12 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4z" /></svg>`, // санузел
-    e7: `<svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg>`, // проверить магазин
-    e8: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 10h6M9 14h6M9 8h2" /></svg>` // вечерний чек-лист
-  };
-
-  // --- Утилиты ---
-
-  /** Получить текущую дату в московском часовом поясе (DD.MM.YYYY) */
-  function formatDateDisplay(date) {
-    return date.toLocaleDateString('ru-RU', {
-      timeZone: CONFIG.TIMEZONE,
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
+  function timeText(value) {
+    if (!value || Number.isNaN(new Date(value).getTime())) return '';
+    return new Date(value).toLocaleTimeString('ru-RU', {
+      timeZone: CONFIG.TIMEZONE, hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
   }
 
-  /** Получить дату для API (YYYY-MM-DD) */
-  function formatDateAPI(date) {
-    return date.toLocaleDateString('sv-SE', { timeZone: CONFIG.TIMEZONE });
-  }
+  function savedTime(record) { return record.timeStr || timeText(record.completedAt || record.timestamp); }
 
-  /** Получить текущее время HH:MM */
-  function getCurrentTime() {
-    return new Date().toLocaleTimeString('ru-RU', {
-      timeZone: CONFIG.TIMEZONE,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-  }
-
-  /** Получить текущий час (число) */
-  function getCurrentHour() {
-    return parseInt(new Date().toLocaleTimeString('en-US', {
-      timeZone: CONFIG.TIMEZONE,
-      hour: '2-digit',
-      hour12: false
-    }));
-  }
-
-  /** Проверка: сейчас после дедлайна секции? */
-  function isPastDeadline(section) {
-    const hour = getCurrentHour();
-    if (section === 'morning') return hour >= CONFIG.DEADLINES.morning;
-    if (section === 'evening') return hour >= CONFIG.DEADLINES.evening;
-    return false; // daytime — без дедлайна
-  }
-
-  /** Извлечь время HH:MM из ISO-строки */
-  function extractTime(isoString) {
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleTimeString('ru-RU', {
-        timeZone: CONFIG.TIMEZONE,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      });
-    } catch {
-      return '';
-    }
-  }
-
-  /** Показать toast-уведомление */
   function showToast(message, type = 'success') {
-    const toast = document.getElementById('toast');
+    clearTimeout(toastTimer);
+    const toast = byId('toast');
     toast.textContent = message;
     toast.className = 'toast visible ' + type;
-    setTimeout(() => {
-      toast.classList.remove('visible');
-    }, 2500);
+    toastTimer = setTimeout(() => toast.classList.remove('visible'), type === 'error' ? 7000 : 4500);
   }
 
-  // --- Загрузка данных ---
-
-  async function loadDayData() {
-    const today = formatDateAPI(new Date());
-    try {
-      const data = await API.getDayData(today);
-      completedTasks = data.tasks || {};
-      customersLog = data.customersLog || [];
-    } catch (err) {
-      console.error('Ошибка загрузки данных:', err);
-      // Используем локальные данные
-    }
-    renderAll();
+  function errorText(error) {
+    return error && error.message ? error.message : 'Не удалось сохранить. Обновите данные и попробуйте ещё раз.';
   }
 
-  // --- Рендеринг ---
-
-  function renderAll() {
-    renderSection('morning', TASKS.morning, document.getElementById('morning-tasks'));
-    renderSection('daytime', TASKS.daytime, document.getElementById('daytime-tasks'));
-    renderSection('evening', TASKS.evening, document.getElementById('evening-tasks'));
-    updateProgress();
-    updateSectionCounts();
-    checkAndUpdateWorkStatus();
+  function undoSeconds(record) {
+    const timestamp = new Date(record.completedAt).getTime();
+    if (!Number.isFinite(timestamp)) return 0;
+    const now = typeof API._now === 'function' ? API._now() : Date.now();
+    return Math.max(0, Math.ceil((timestamp + CONFIG.UNDO_TIMEOUT - now) / 1000));
   }
 
-  function renderSection(section, tasks, container) {
-    container.innerHTML = '';
-    tasks.forEach(task => {
-      const compositeKey = currentUser.name + '_' + task.id;
-      const completion = completedTasks[compositeKey];
-      const card = createTaskCard(task, section, completion);
-      container.appendChild(card);
-    });
+  function undoBlock(id, section) {
+    if (id === '_arrive' && entry('_leave')) return 'Сначала отмените завершение смены.';
+    if (id === '_arrive' && busy.has('_leave')) return 'Дождитесь сохранения завершения смены.';
+    const confirmation = CONFIRMATIONS[section];
+    if (confirmation && id !== confirmation && entry(confirmation)) return 'Для отмены сначала отмените подтверждение раздела.';
+    if (confirmation && id !== confirmation && busy.has(confirmation)) return 'Дождитесь сохранения подтверждения раздела.';
+    return '';
   }
 
-  function createTaskCard(task, section, completion) {
-    const card = document.createElement('div');
-    card.className = 'task-card';
+  function addUndo(container, id, section, record) {
+    if (!undoSeconds(record)) return;
+    const blocker = undoBlock(id, section);
+    const undo = button('Отменить', 'undo-btn', () => undoRecord(id, section), !canWrite() || busy.has(id) || Boolean(blocker));
+    undo.id = 'undo-' + id;
+    undo.dataset.undoId = id;
+    undo.dataset.section = section;
+    undo.textContent = busy.has(id) ? 'Отменяем…' : 'Отменить · ' + undoSeconds(record) + ' с';
+    if (blocker) undo.title = blocker;
+    container.append(undo);
+    if (blocker) container.append(element('p', 'task-hint undo-hint', blocker));
+  }
+
+  function sectionReady(section, id) {
+    if (CONFIRMATIONS[section] !== id) return true;
+    return TASKS[section].filter(task => task.id !== id).every(task => entry(task.id) && !busy.has(task.id));
+  }
+
+  function createTask(task, section, index) {
+    const record = entry(task.id);
+    const card = element('article', 'task-card');
     card.id = 'task-' + task.id;
-    const icon = TASK_ICONS[task.id] || `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></svg>`;
-
-    if (completion) {
-      if (completion.isFailed) {
-        card.classList.add('failed');
-      } else {
-        card.classList.add(completion.isLate ? 'late' : 'completed');
-      }
-
-      const timeDisplay = completion.timeStr || extractTime(completion.completedAt);
-      const employeeDisplay = completion.employee || currentUser.name;
-
-      let statusIconHTML, statusText;
-      if (completion.isFailed) {
-        statusIconHTML = `<span class="status-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></svg></span>`;
-        statusText = `Не выполнено · ${employeeDisplay} · ${timeDisplay}`;
-      } else if (completion.isLate) {
-        statusIconHTML = `<span class="status-icon warning"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" /></svg></span>`;
-        statusText = `${employeeDisplay} · ${timeDisplay}`;
-      } else {
-        statusIconHTML = `<span class="status-icon success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg></span>`;
-        statusText = `${employeeDisplay} · ${timeDisplay}`;
-      }
-
-      let contentHTML = `
-        <div class="task-name">${task.name}</div>
-        <div class="task-status">
-          ${statusIconHTML}
-          <span>${statusText}</span>
-          ${completion.isLate ? '<span class="late-badge">ОПОЗДАНИЕ</span>' : ''}
-        </div>
-      `;
-
-      if (completion.isFailed && completion.reason) {
-        contentHTML += `<div class="task-reason"><strong>Причина:</strong> ${completion.reason}</div>`;
-      }
-
-      const undoInfo = undoTimers.get(task.id);
-      if (undoInfo && Date.now() < undoInfo.expireAt) {
-        const secondsLeft = Math.ceil((undoInfo.expireAt - Date.now()) / 1000);
-        contentHTML += `<div class="task-actions"><button class="undo-btn" data-task-id="${task.id}" data-section="${section}">↩ Отменить (${secondsLeft}с)</button></div>`;
-      }
-
-      card.innerHTML = `<div class="task-icon">${icon}</div><div class="task-content">${contentHTML}</div>`;
-
-      const undoBtn = card.querySelector('.undo-btn');
-      if (undoBtn) undoBtn.addEventListener('click', () => handleUndoTask(task.id, section));
-
+    card.setAttribute('aria-labelledby', 'name-' + task.id);
+    const marker = element('span', 'task-index', String(index + 1).padStart(2, '0'));
+    marker.setAttribute('aria-hidden', 'true');
+    const content = element('div', 'task-content');
+    const heading = element('h3', 'task-name', task.name);
+    heading.id = 'name-' + task.id;
+    content.append(heading);
+    card.append(marker, content);
+    const actions = element('div', 'task-actions');
+    if (record) {
+      card.classList.add(record.isFailed ? 'failed' : record.isLate ? 'late' : 'completed');
+      marker.textContent = record.isFailed ? '×' : '✓';
+      const status = record.isFailed ? 'Не выполнено' : record.isLate ? 'Выполнено с опозданием' : 'Выполнено';
+      content.append(element('p', 'task-status', status + ' · ' + savedTime(record)));
+      if (record.isFailed && record.reason) content.append(element('p', 'task-reason', 'Причина: ' + record.reason));
+      addUndo(actions, task.id, section, record);
     } else {
-      card.innerHTML = `
-        <div class="task-icon">${icon}</div>
-        <div class="task-content"><div class="task-name">${task.name}</div></div>
-        <div class="task-actions task-actions-two">
-          <button class="complete-btn" data-task-id="${task.id}" data-section="${section}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><polyline points="20 6 9 17 4 12" /></svg>
-          </button>
-          <button class="fail-btn" data-task-id="${task.id}" data-section="${section}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-          </button>
-        </div>
-      `;
-
-      card.querySelector('.complete-btn').addEventListener('click', () => handleCompleteTask(task.id, task.name, section));
-      card.querySelector('.fail-btn').addEventListener('click', () => showFailModal(task.id, task.name, section));
+      const ready = sectionReady(section, task.id);
+      const locked = !canWrite() || busy.has(task.id) || !ready;
+      const complete = button(busy.has(task.id) ? 'Сохраняем…' : CONFIRMATIONS[section] === task.id ? 'Подтвердить' : 'Выполнено', 'complete-btn', () => saveTask(task, section), locked);
+      complete.id = 'complete-' + task.id;
+      complete.setAttribute('aria-label', 'Выполнено: ' + task.name);
+      const fail = button('Не выполнено', 'fail-btn', () => openFailure(task, section), locked);
+      fail.id = 'fail-' + task.id;
+      fail.setAttribute('aria-label', 'Не выполнено: ' + task.name);
+      actions.append(complete, fail);
+      if (!ready) {
+        const hint = element('p', 'task-hint', 'Сначала отметьте все предыдущие задачи этого раздела.');
+        hint.id = 'hint-' + task.id;
+        content.append(hint);
+        complete.setAttribute('aria-describedby', hint.id);
+        fail.setAttribute('aria-describedby', hint.id);
+      }
     }
-
+    if (actions.childElementCount) content.append(actions);
     return card;
   }
 
-  function updateProgress() {
-    let completed = 0;
-    const allTasks = [...TASKS.morning, ...TASKS.daytime, ...TASKS.evening];
-    allTasks.forEach(task => {
-      const compositeKey = currentUser.name + '_' + task.id;
-      if (completedTasks[compositeKey]) completed++;
-    });
-
-    const progressText = document.getElementById('progress-text');
-    const progressNumber = document.getElementById('progress-number');
-    const ring = document.getElementById('progress-ring');
-
-    if (progressText) progressText.textContent = `${completed} из ${TOTAL_TASKS} задач выполнено`;
-    if (progressNumber) progressNumber.textContent = completed;
-
-    // Circular SVG progress
-    if (ring) {
-      const circumference = 2 * Math.PI * 52;
-      const offset = circumference - (completed / TOTAL_TASKS) * circumference;
-      ring.style.strokeDasharray = circumference;
-      ring.style.strokeDashoffset = offset;
-    }
-
-    // Legacy bar fallback
-    const progressBar = document.getElementById('progress-bar');
-    if (progressBar) progressBar.style.width = `${(completed / TOTAL_TASKS) * 100}%`;
-  }
-
-  function updateSectionCounts() {
-    ['morning', 'daytime', 'evening'].forEach(section => {
-      const tasks = TASKS[section];
-      let done = 0;
-      tasks.forEach(t => {
-        const compositeKey = currentUser.name + '_' + t.id;
-        if (completedTasks[compositeKey]) done++;
+  function renderProgress() {
+    let done = 0, failed = 0;
+    SECTIONS.forEach(section => {
+      let sectionDone = 0, sectionFailed = 0;
+      TASKS[section].forEach(task => {
+        const record = entry(task.id);
+        if (record) record.isFailed ? sectionFailed++ : sectionDone++;
       });
-      const countEl = document.getElementById(section + '-count');
-      if (countEl) {
-        countEl.textContent = `${done}/${tasks.length}`;
-        countEl.classList.toggle('done', done === tasks.length);
-      }
+      done += sectionDone;
+      failed += sectionFailed;
+      const badge = byId(section + '-count');
+      badge.textContent = sectionDone + '/' + TASKS[section].length;
+      badge.classList.toggle('done', sectionDone === TASKS[section].length);
+      badge.setAttribute('role', 'status');
+      badge.setAttribute('aria-label', 'Выполнено ' + sectionDone + ' из ' + TASKS[section].length + '; не выполнено ' + sectionFailed);
+    });
+    const remaining = TOTAL_TASKS - done - failed;
+    byId('count-done').textContent = done;
+    byId('count-failed').textContent = failed;
+    byId('count-remaining').textContent = remaining;
+    byId('progress-number').textContent = done;
+    byId('progress-total').textContent = 'из ' + TOTAL_TASKS;
+    byId('progress-text').textContent = remaining
+      ? 'Выполнено ' + done + ' из ' + TOTAL_TASKS + '. Без отметки: ' + remaining + (failed ? '. Не выполнено: ' + failed + '.' : '.')
+      : failed ? 'Все задачи отмечены. Не выполнено: ' + failed + ' — причины сохранены.' : 'Все задачи выполнены. Спасибо за работу!';
+    const circumference = 2 * Math.PI * 52;
+    byId('progress-ring').style.strokeDasharray = circumference;
+    byId('progress-ring').style.strokeDashoffset = circumference * (1 - done / TOTAL_TASKS);
+  }
+
+  function renderWorkStatus() {
+    ['arrive', 'leave'].forEach(type => {
+      const id = '_' + type;
+      const record = entry(id);
+      const control = byId(type + '-btn');
+      const feedback = byId(type + '-feedback');
+      control.disabled = !canWrite() || busy.has(id) || Boolean(record) || (type === 'leave' && (!entry('_arrive') || busy.has('_arrive')));
+      control.classList.toggle('recorded', Boolean(record));
+      control.querySelector('span').textContent = busy.has(id) ? 'Сохраняем…' : record
+        ? (type === 'arrive' ? 'На работе с ' : 'Смена завершена в ') + savedTime(record)
+        : type === 'arrive' ? 'Я на работе' : 'Завершить смену';
+      feedback.replaceChildren();
+      if (record) addUndo(feedback, id, 'status', record);
+      if (type === 'leave' && !entry('_arrive')) feedback.append(element('p', 'task-hint', 'Сначала отметьте начало смены.'));
     });
   }
 
-  // --- Обработчики ---
+  function renderCustomers() {
+    const ownRecords = customers.filter(record => record.employee === user.name);
+    byId('customers-summary').textContent = 'Сегодня вы отметили: ' + ownRecords.length;
+    const list = byId('customers-log');
+    list.replaceChildren();
+    ownRecords.slice().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 5).forEach(record => {
+      list.append(element('li', '', 'Визит · ' + savedTime(record)));
+    });
+    renderCustomerButton();
+  }
 
-  async function handleCompleteTask(taskId, taskName, section) {
-    // Блокируем кнопку
-    const card = document.getElementById('task-' + taskId);
-    const btn = card?.querySelector('.complete-btn');
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = '⏳';
-    }
+  function renderCustomerButton() {
+    const control = byId('customers-btn');
+    control.disabled = !canWrite() || busy.has('customers') || customerCooldown > Date.now();
+    control.textContent = busy.has('customers') ? 'Сохраняем визит…' : '+ Записать визит';
+  }
 
-    try {
-      const result = await API.completeTask(currentUser.name, taskId, taskName, section);
+  function renderSync() {
+    const status = byId('sync-status');
+    const last = lastSyncedAt ? ' Последнее обновление: ' + timeText(lastSyncedAt) + '.' : '';
+    if (loading) status.textContent = 'Обновляем отметки…';
+    else if (!navigator.onLine) status.textContent = 'Нет интернета. Только просмотр.' + last;
+    else if (source === 'server') status.textContent = 'Данные обновлены' + (lastSyncedAt ? ' в ' + timeText(lastSyncedAt) : '') + ' · МСК';
+    else if (source === 'cache') status.textContent = 'Сохранённая копия. Обновите данные для новых отметок.' + last;
+    else status.textContent = 'Не удалось загрузить отметки. Нажмите «Обновить».';
+    status.dataset.state = !navigator.onLine || source !== 'server' ? 'warning' : 'ready';
+    byId('offline-banner').hidden = navigator.onLine;
+    byId('refresh-btn').disabled = loading || busy.size > 0;
+    byId('refresh-btn').textContent = loading ? 'Обновляем…' : 'Обновить';
+  }
 
-      if (result.success) {
-        // Обновляем локальное состояние
-        const compositeKey = currentUser.name + '_' + taskId;
-        completedTasks[compositeKey] = {
-          employee: currentUser.name,
-          completedAt: new Date().toISOString(),
-          isLate: result.isLate,
-          timeStr: result.timeStr,
-          section,
-          taskName
-        };
-
-        // Запускаем таймер отмены (60 секунд)
-        const expireAt = Date.now() + CONFIG.UNDO_TIMEOUT;
-        const timerId = setTimeout(() => {
-          undoTimers.delete(taskId);
-          const taskDef = findTask(taskId);
-          if (taskDef) {
-            const container = card.parentElement;
-            const curCard = document.getElementById('task-' + taskId);
-            if (curCard && container) {
-              const newCard = createTaskCard(taskDef, section, completedTasks[compositeKey]);
-              container.replaceChild(newCard, curCard);
-            }
-          }
-        }, CONFIG.UNDO_TIMEOUT);
-
-        undoTimers.set(taskId, { timerId, expireAt });
-
-        renderAll();
-
-        const message = result.isLate
-          ? `⚠️ Отмечено с опозданием: ${taskName}`
-          : `✅ Выполнено: ${taskName}`;
-        showToast(message, result.isLate ? 'warning' : 'success');
-      }
-    } catch (err) {
-      console.error('Ошибка:', err);
-      showToast('Ошибка сохранения', 'error');
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><polyline points="20 6 9 17 4 12" /></svg>`;
-      }
+  function renderAll() {
+    // Preserve keyboard focus when replacing task rows after a save or refresh.
+    const focusedId = document.activeElement && document.activeElement.id;
+    SECTIONS.forEach(section => {
+      const container = byId(section + '-tasks');
+      container.replaceChildren(...TASKS[section].map((task, index) => createTask(task, section, index)));
+      container.setAttribute('aria-busy', String(loading));
+    });
+    renderProgress();
+    renderWorkStatus();
+    renderCustomers();
+    renderSync();
+    if (focusedId && !activeModal) {
+      const next = byId(focusedId);
+      if (next && !next.disabled) next.focus({ preventScroll: true });
     }
   }
 
-  async function handleUndoTask(taskId, section) {
+  function updateDate() {
+    byId('current-date').textContent = new Date(activeDate + 'T12:00:00Z').toLocaleDateString('ru-RU', {
+      timeZone: CONFIG.TIMEZONE, weekday: 'long', day: 'numeric', month: 'long'
+    }) + ' · МСК';
+  }
+
+  function checkDay() {
+    const nextDate = today();
+    if (activeDate === nextDate) return false;
+    activeDate = nextDate;
+    revision++;
+    entries = {};
+    customers = [];
+    source = 'loading';
+    lastSyncedAt = null;
+    closeModal(true);
+    updateDate();
+    renderAll();
+    reloadNeeded = true;
+    if (!loading && !busy.size) loadDayData();
+    return true;
+  }
+
+  async function loadDayData() {
+    if (loading || busy.size) { reloadNeeded = true; return; }
+    loading = true;
+    reloadNeeded = false;
+    const requestedDate = activeDate;
+    const requestedRevision = revision;
+    renderSync();
     try {
-      await API.undoTask(currentUser.name, taskId, section);
-
-      const compositeKey = currentUser.name + '_' + taskId;
-      delete completedTasks[compositeKey];
-
-      const undoInfo = undoTimers.get(taskId);
-      if (undoInfo) {
-        clearTimeout(undoInfo.timerId);
-        undoTimers.delete(taskId);
+      const data = await API.getDayData(requestedDate);
+      if (requestedDate !== activeDate || requestedRevision !== revision) { reloadNeeded = true; return; }
+      entries = data.tasks || {};
+      customers = data.customersLog || [];
+      source = data.source === 'server' && !data.stale ? 'server' : 'cache';
+      lastSyncedAt = data.lastSyncedAt || null;
+    } catch (error) {
+      if (requestedDate === activeDate && requestedRevision === revision) {
+        source = Object.keys(entries).length || customers.length ? 'cache' : 'error';
+        showToast(errorText(error), 'error');
       }
-
+    } finally {
+      loading = false;
       renderAll();
-      showToast('↩ Отмена выполнена', 'success');
-    } catch (err) {
-      console.error('Ошибка отмены:', err);
-      showToast('Ошибка при отмене', 'error');
+      if (reloadNeeded && !busy.size) loadDayData();
     }
   }
 
-  /** Показать модалку «Не выполнено» с полем для причины */
-  function showFailModal(taskId, taskName, section) {
-    // Создаём модалку, если её ещё нет
-    let modal = document.getElementById('fail-modal');
-    if (!modal) {
-      modal = document.createElement('div');
-      modal.id = 'fail-modal';
-      modal.className = 'pin-modal';
-      modal.innerHTML = `
-        <div class="pin-modal-content">
-          <button class="pin-close" id="fail-close">←</button>
-          <h2>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
-            Не выполнено
-          </h2>
-          <p id="fail-task-name"></p>
-          <label>Причина (необязательно):</label>
-          <textarea id="fail-reason" rows="3" placeholder="Напишите причину..."></textarea>
-          <button id="fail-submit" class="pin-submit">Подтвердить</button>
-        </div>
-      `;
-      document.body.appendChild(modal);
-
-      // Закрытие модалки
-      document.getElementById('fail-close').addEventListener('click', () => {
-        modal.classList.remove('active');
-      });
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) modal.classList.remove('active');
-      });
-    }
-
-    // Заполняем данные
-    document.getElementById('fail-task-name').textContent = taskName;
-    document.getElementById('fail-reason').value = '';
-
-    // Устанавливаем обработчик
-    const submitBtn = document.getElementById('fail-submit');
-    const newSubmit = submitBtn.cloneNode(true);
-    submitBtn.parentNode.replaceChild(newSubmit, submitBtn);
-
-    newSubmit.addEventListener('click', async () => {
-      const reason = document.getElementById('fail-reason').value.trim();
-      newSubmit.disabled = true;
-      newSubmit.textContent = '⏳';
-
-      await handleFailTask(taskId, taskName, section, reason);
-
-      modal.classList.remove('active');
-      newSubmit.disabled = false;
-      newSubmit.textContent = 'Подтвердить';
-    });
-
-    modal.classList.add('active');
-    history.pushState({ modal: 'fail' }, '');
-    setTimeout(() => document.getElementById('fail-reason').focus(), 100);
-  }
-
-  async function handleFailTask(taskId, taskName, section, reason) {
+  async function mutate(id, operation, apply, message) {
+    if (checkDay()) { showToast('Начался новый день. Дождитесь загрузки нового чек-листа.', 'warning'); return false; }
+    if (busy.has(id)) return false;
+    if (!canWrite()) { showToast('Для сохранения нужен интернет и актуальные данные. Нажмите «Обновить».', 'error'); return false; }
+    const mutationDate = activeDate;
+    busy.add(id);
+    revision++;
+    renderAll();
     try {
-      const result = await API.failTask(currentUser.name, taskId, taskName, section, reason);
-
-      if (result.success) {
-        const compositeKey = currentUser.name + '_' + taskId;
-        completedTasks[compositeKey] = {
-          employee: currentUser.name,
-          completedAt: new Date().toISOString(),
-          isLate: false,
-          isFailed: true,
-          reason: reason || '',
-          timeStr: result.timeStr,
-          section,
-          taskName
-        };
-
-        const expireAt = Date.now() + CONFIG.UNDO_TIMEOUT;
-        const timerId = setTimeout(() => {
-          undoTimers.delete(taskId);
-          renderAll();
-        }, CONFIG.UNDO_TIMEOUT);
-        undoTimers.set(taskId, { timerId, expireAt });
-
-        renderAll();
-        showToast(`❌ Отмечено: ${taskName}`, 'error');
+      const result = await operation(mutationDate);
+      if (!result || result.success !== true) throw new Error('Сервер не подтвердил сохранение. Обновите данные.');
+      if (today() !== activeDate) checkDay();
+      if (mutationDate === activeDate && (!result.date || result.date === activeDate)) {
+        apply(result);
+        showToast(typeof message === 'function' ? message(result) : message);
+      } else {
+        reloadNeeded = true;
+        showToast('Отметка сохранена за предыдущий день. Обновляем сегодняшний чек-лист.', 'warning');
       }
-    } catch (err) {
-      console.error('Ошибка:', err);
-      showToast('Ошибка сохранения', 'error');
+      return true;
+    } catch (error) {
+      showToast(errorText(error), 'error');
+      if (activeModal === 'fail-modal' && failureTask?.task.id === id) byId('fail-error').textContent = errorText(error);
+      // A timeout may have happened after the server accepted the write.
+      reloadNeeded = true;
+      return false;
+    } finally {
+      busy.delete(id);
+      revision++;
+      renderAll();
+      if (reloadNeeded && !loading && !busy.size) loadDayData();
     }
   }
 
-  /** Найти задачу по ID */
-  function findTask(taskId) {
-    for (const section of ['morning', 'daytime', 'evening']) {
-      const found = TASKS[section].find(t => t.id === taskId);
-      if (found) return found;
-    }
-    return null;
+  function acceptEntry(id, result) {
+    if (!result.entry || !result.entry.completedAt) throw new Error('Не получено подтверждение отметки. Обновите данные.');
+    entries[key(id)] = result.entry;
   }
 
-  /** Показать модальное окно с пожеланием */
-  function showWishModal(type) {
-    const modal = document.getElementById('wish-modal');
-    if (!modal) return;
+  async function saveTask(task, section) {
+    if (entry(task.id) || !sectionReady(section, task.id)) return;
+    const saved = await mutate(task.id,
+      date => API.completeTask(user.name, task.id, task.name, section, date),
+      result => acceptEntry(task.id, result),
+      result => result.entry.isLate ? 'Выполнено с опозданием. Отметка сохранена.' : 'Выполнение сохранено.');
+    if (saved) byId('undo-' + task.id)?.focus({ preventScroll: true });
+  }
 
-    const emojiEl = document.getElementById('wish-emoji');
-    const titleEl = document.getElementById('wish-title');
-    const textEl = document.getElementById('wish-text');
-    const contentEl = modal.querySelector('.wish-modal-content');
+  async function undoRecord(id, section) {
+    if (!entry(id) || !undoSeconds(entry(id)) || undoBlock(id, section)) return;
+    const saved = await mutate(id,
+      date => section === 'status' ? API.undoWorkStatus(user.name, id.slice(1), date) : API.undoTask(user.name, id, section, date),
+      () => { delete entries[key(id)]; }, 'Отметка отменена.');
+    if (saved) (byId('complete-' + id) || byId(id.slice(1) + '-btn'))?.focus({ preventScroll: true });
+  }
 
-    const dayIndex = new Date().getDate() % 10;
+  async function saveWorkStatus(type) {
+    const id = '_' + type;
+    if (entry(id) || (type === 'leave' && (!entry('_arrive') || busy.has('_arrive')))) return;
+    await mutate(id, date => API.logWorkStatus(user.name, type, date), result => acceptEntry(id, result),
+      type === 'arrive' ? 'Начало смены сохранено. Хорошего рабочего дня!' : 'Смена завершена. Все отметки сохранены.');
+  }
 
-    if (type === 'arrive') {
-      emojiEl.textContent = '☀️';
-      titleEl.textContent = 'Доброе утро!';
-      textEl.textContent = MORNING_WISHES[dayIndex];
-    } else {
-      emojiEl.textContent = '🌙';
-      titleEl.textContent = 'Хорошего вечера!';
-      textEl.textContent = EVENING_WISHES[dayIndex];
-    }
+  async function saveCustomer() {
+    if (Date.now() < customerCooldown) return;
+    await mutate('customers', date => API.logCustomersEvent(user.name, date), result => {
+      if (!result.entry) throw new Error('Не получено подтверждение визита. Обновите данные.');
+      const existingIndex = result.entry.id ? customers.findIndex(record => record.id === result.entry.id) : -1;
+      if (existingIndex >= 0) customers[existingIndex] = result.entry;
+      else customers.push(result.entry);
+      customerCooldown = Date.now() + 1500;
+    }, 'Визит сохранён.');
+  }
 
-    if (wishModalTimer) {
-      clearTimeout(wishModalTimer);
-      wishModalTimer = null;
-    }
-
+  function openModal(id, firstFocus) {
+    focusBeforeModal = document.activeElement;
+    activeModal = id;
+    const modal = byId(id);
+    modal.hidden = false;
     modal.classList.add('active');
-    
-    contentEl.classList.remove('animating');
-    void contentEl.offsetWidth; // Триггер reflow
-    contentEl.classList.add('animating');
-
-    const closeBtn = document.getElementById('wish-close');
-    const handleClose = () => {
-      modal.classList.remove('active');
-      contentEl.classList.remove('animating');
-      if (wishModalTimer) {
-        clearTimeout(wishModalTimer);
-        wishModalTimer = null;
-      }
-      closeBtn.removeEventListener('click', handleClose);
-      modal.removeEventListener('click', handleOutsideClick);
-    };
-
-    const handleOutsideClick = (e) => {
-      if (e.target === modal) handleClose();
-    };
-
-    closeBtn.addEventListener('click', handleClose);
-    modal.addEventListener('click', handleOutsideClick);
-
-    wishModalTimer = setTimeout(handleClose, 6000);
+    document.querySelector('.employee-page').inert = true;
+    document.body.classList.add('dialog-open');
+    (byId(firstFocus) || modal.querySelector('[role="dialog"]')).focus();
   }
 
-  /** Получить ключи localStorage для статуса работы */
-  function _workStatusKeys() {
-    const todayKey = formatDateAPI(new Date());
-    return {
-      arriveKey: `status_arrive_${currentUser.name}_${todayKey}`,
-      leaveKey: `status_leave_${currentUser.name}_${todayKey}`,
-      todayKey
-    };
+  function closeModal(force = false) {
+    if (!activeModal || (!force && activeModal === 'fail-modal' && failureTask && busy.has(failureTask.task.id))) return;
+    const modal = byId(activeModal);
+    modal.hidden = true;
+    modal.classList.remove('active');
+    activeModal = null;
+    document.querySelector('.employee-page').inert = false;
+    document.body.classList.remove('dialog-open');
+    const restore = focusBeforeModal && focusBeforeModal.id ? byId(focusBeforeModal.id) : focusBeforeModal;
+    if (restore && restore.isConnected && !restore.disabled) restore.focus({ preventScroll: true });
   }
 
-  /** Проверить и настроить кнопки «Я на работе» / «Ушла с работы» */
-  function checkAndUpdateWorkStatus() {
-    if (!currentUser) return;
-    
-    const { arriveKey, leaveKey } = _workStatusKeys();
+  function openFailure(task, section) {
+    if (checkDay() || !canWrite() || busy.has(task.id) || entry(task.id) || !sectionReady(section, task.id)) return;
+    failureTask = { task, section };
+    byId('fail-task-name').textContent = task.name;
+    byId('fail-reason').value = '';
+    byId('fail-error').textContent = '';
+    openModal('fail-modal', 'fail-reason');
+  }
 
-    const arriveTime = localStorage.getItem(arriveKey);
-    const leaveTime = localStorage.getItem(leaveKey);
-
-    const arriveBtn = document.getElementById('arrive-btn');
-    const leaveBtn = document.getElementById('leave-btn');
-
-    // Если оба нажаты (полный цикл) и нет активного таймера отмены — сбрасываем оба
-    const arriveUndoActive = undoTimers.has('_arrive');
-    const leaveUndoActive = undoTimers.has('_leave');
-    if (arriveTime && leaveTime && !arriveUndoActive && !leaveUndoActive) {
-      localStorage.removeItem(arriveKey);
-      localStorage.removeItem(leaveKey);
-      // После сброса обновляем UI
-      if (arriveBtn) {
-        arriveBtn.disabled = false;
-        arriveBtn.querySelector('span').textContent = 'Я на работе';
-      }
-      if (leaveBtn) {
-        leaveBtn.disabled = false;
-        leaveBtn.querySelector('span').textContent = 'Ушла с работы';
-      }
+  async function submitFailure(event) {
+    event.preventDefault();
+    if (!failureTask || busy.has(failureTask.task.id)) return;
+    const { task, section } = failureTask;
+    const reason = byId('fail-reason').value.trim();
+    if (reason.length < 3 || reason.length > 500) {
+      byId('fail-error').textContent = 'Укажите причину длиной от 3 до 500 символов.';
+      byId('fail-reason').focus();
       return;
     }
-
-    if (arriveBtn) {
-      if (arriveUndoActive) {
-        // Показываем кнопку отмены
-        const info = undoTimers.get('_arrive');
-        const secs = Math.ceil((info.expireAt - Date.now()) / 1000);
-        arriveBtn.disabled = true;
-        arriveBtn.querySelector('span').innerHTML = `На работе (с ${arriveTime}) &nbsp;<button class="undo-status-btn" id="undo-arrive">↩ Отменить (${secs}с)</button>`;
-      } else if (arriveTime) {
-        arriveBtn.disabled = true;
-        arriveBtn.querySelector('span').textContent = `На работе (с ${arriveTime})`;
-      } else {
-        arriveBtn.disabled = false;
-        arriveBtn.querySelector('span').textContent = 'Я на работе';
-      }
+    if (entry(task.id) || !sectionReady(section, task.id)) {
+      byId('fail-error').textContent = 'Данные задачи изменились. Закройте окно и проверьте отметки.';
+      return;
     }
-
-    if (leaveBtn) {
-      if (leaveUndoActive) {
-        const info = undoTimers.get('_leave');
-        const secs = Math.ceil((info.expireAt - Date.now()) / 1000);
-        leaveBtn.disabled = true;
-        leaveBtn.querySelector('span').innerHTML = `Ушла (в ${leaveTime}) &nbsp;<button class="undo-status-btn" id="undo-leave">↩ Отменить (${secs}с)</button>`;
-      } else if (leaveTime) {
-        leaveBtn.disabled = true;
-        leaveBtn.querySelector('span').textContent = `Ушла с работы (в ${leaveTime})`;
-      } else {
-        leaveBtn.disabled = false;
-        leaveBtn.querySelector('span').textContent = 'Ушла с работы';
-      }
-    }
-
-    // Подключаем клики на кнопки отмены (они внутри span)
-    const undoArriveBtn = document.getElementById('undo-arrive');
-    if (undoArriveBtn) {
-      undoArriveBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        handleUndoWorkStatus('arrive');
-      });
-    }
-    const undoLeaveBtn = document.getElementById('undo-leave');
-    if (undoLeaveBtn) {
-      undoLeaveBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        handleUndoWorkStatus('leave');
-      });
+    const submit = byId('fail-submit');
+    submit.disabled = true;
+    submit.textContent = 'Сохраняем…';
+    byId('fail-error').textContent = '';
+    const saved = await mutate(task.id,
+      date => API.failTask(user.name, task.id, task.name, section, reason, date),
+      result => acceptEntry(task.id, result), 'Отметка «Не выполнено» и причина сохранены.');
+    submit.disabled = false;
+    submit.textContent = 'Сохранить причину';
+    if (saved) {
+      closeModal();
+      byId('undo-' + task.id)?.focus({ preventScroll: true });
     }
   }
 
-  function handleUndoWorkStatus(type) {
-    const { arriveKey, leaveKey } = _workStatusKeys();
-    const timerKey = type === 'arrive' ? '_arrive' : '_leave';
-    const storageKey = type === 'arrive' ? arriveKey : leaveKey;
-
-    localStorage.removeItem(storageKey);
-
-    const info = undoTimers.get(timerKey);
-    if (info) {
-      clearTimeout(info.timerId);
-      undoTimers.delete(timerKey);
-    }
-
-    // Отменяем в Supabase и Telegram
-    API.undoWorkStatus(currentUser.name, type);
-
-    checkAndUpdateWorkStatus();
-    showToast('↩ Отметка отменена', 'success');
+  function tick() {
+    if (checkDay()) return;
+    document.querySelectorAll('[data-undo-id]').forEach(control => {
+      const record = entry(control.dataset.undoId);
+      const seconds = record ? undoSeconds(record) : 0;
+      if (!seconds) {
+        const container = control.parentElement;
+        control.remove();
+        container.querySelector('.undo-hint')?.remove();
+      } else if (!busy.has(control.dataset.undoId)) control.textContent = 'Отменить · ' + seconds + ' с';
+    });
+    renderCustomerButton();
   }
-
-  async function handleArriveClick() {
-    const arriveBtn = document.getElementById('arrive-btn');
-    if (!arriveBtn || arriveBtn.disabled) return;
-
-    arriveBtn.disabled = true;
-    arriveBtn.querySelector('span').textContent = '⏳ Отправка...';
-
-    try {
-      const result = await API.logWorkStatus(currentUser.name, 'arrive');
-      if (result.success) {
-        const { arriveKey } = _workStatusKeys();
-        localStorage.setItem(arriveKey, result.timeStr);
-        
-        showWishModal('arrive');
-
-        // Таймер отмены 60 секунд
-        const expireAt = Date.now() + CONFIG.UNDO_TIMEOUT;
-        const timerId = setTimeout(() => {
-          undoTimers.delete('_arrive');
-          checkAndUpdateWorkStatus();
-        }, CONFIG.UNDO_TIMEOUT);
-        undoTimers.set('_arrive', { timerId, expireAt });
-
-        checkAndUpdateWorkStatus();
-        showToast('🌅 Время прибытия зафиксировано!', 'success');
-      }
-    } catch (err) {
-      console.error('Ошибка логирования прихода:', err);
-      showToast('Ошибка сети при отправке статуса', 'error');
-      arriveBtn.disabled = false;
-      arriveBtn.querySelector('span').textContent = 'Я на работе';
-    }
-  }
-
-  async function handleLeaveClick() {
-    const leaveBtn = document.getElementById('leave-btn');
-    if (!leaveBtn || leaveBtn.disabled) return;
-
-    leaveBtn.disabled = true;
-    leaveBtn.querySelector('span').textContent = '⏳ Отправка...';
-
-    try {
-      const result = await API.logWorkStatus(currentUser.name, 'leave');
-      if (result.success) {
-        const { leaveKey } = _workStatusKeys();
-        localStorage.setItem(leaveKey, result.timeStr);
-
-        showWishModal('leave');
-
-        // Таймер отмены 60 секунд. После истечения — сброс всех задач у сотрудника
-        const expireAt = Date.now() + CONFIG.UNDO_TIMEOUT;
-        const timerId = setTimeout(() => {
-          undoTimers.delete('_leave');
-          // Сбрасываем все задачи сотрудника из localStorage (в Supabase остаются для админки)
-          const todayDate = formatDateAPI(new Date());
-          localStorage.removeItem('checklist_data_' + todayDate);
-          localStorage.removeItem('checklist_customers_' + todayDate);
-          completedTasks = {};
-          checkAndUpdateWorkStatus();
-          renderAll();
-        }, CONFIG.UNDO_TIMEOUT);
-        undoTimers.set('_leave', { timerId, expireAt });
-
-        checkAndUpdateWorkStatus();
-        showToast('🌆 Время ухода зафиксировано!', 'success');
-      }
-    } catch (err) {
-      console.error('Ошибка логирования ухода:', err);
-      showToast('Ошибка сети при отправке статуса', 'error');
-      leaveBtn.disabled = false;
-      leaveBtn.querySelector('span').textContent = 'Ушла с работы';
-    }
-  }
-
-  // --- Инициализация ---
 
   document.addEventListener('DOMContentLoaded', () => {
-    // Проверка авторизации
-    currentUser = Auth.requireAuth('employee');
-    if (!currentUser) return;
-
-    // Устанавливаем дату и имя
-    document.getElementById('current-date').innerHTML =
-      `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;margin-right:6px;"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>${formatDateDisplay(new Date())}`;
-    document.getElementById('employee-name').textContent = currentUser.name;
-
-    // Кнопка выхода
-    document.getElementById('logout-btn').addEventListener('click', () => Auth.logout());
-
-    // Кнопки прихода и ухода
-    const arriveBtn = document.getElementById('arrive-btn');
-    const leaveBtn = document.getElementById('leave-btn');
-    if (arriveBtn) arriveBtn.addEventListener('click', handleArriveClick);
-    if (leaveBtn) leaveBtn.addEventListener('click', handleLeaveClick);
-
-    // Отслеживание сети
-    window.addEventListener('online', () => {
-      document.getElementById('offline-banner').classList.remove('visible');
+    user = Auth.requireAuth('employee');
+    if (!user) return;
+    activeDate = today();
+    byId('employee-name').textContent = user.name;
+    updateDate();
+    byId('logout-btn').addEventListener('click', () => Auth.logout());
+    byId('refresh-btn').addEventListener('click', () => { if (!checkDay()) loadDayData(); });
+    byId('arrive-btn').addEventListener('click', () => saveWorkStatus('arrive'));
+    byId('leave-btn').addEventListener('click', () => saveWorkStatus('leave'));
+    byId('customers-btn').addEventListener('click', saveCustomer);
+    byId('show-instructions-btn').addEventListener('click', () => openModal('instructions-modal', 'instructions-close'));
+    byId('instructions-close').addEventListener('click', () => closeModal());
+    byId('fail-close').addEventListener('click', () => closeModal());
+    byId('fail-form').addEventListener('submit', submitFailure);
+    ['fail-modal', 'instructions-modal'].forEach(id => {
+      byId(id).addEventListener('click', event => { if (event.target === byId(id)) closeModal(); });
     });
-    window.addEventListener('offline', () => {
-      document.getElementById('offline-banner').classList.add('visible');
-    });
-
-    // Загрузка данных
-    loadDayData();
-
-    // Автообновление каждые 5 минут
-    refreshTimer = setInterval(loadDayData, CONFIG.REFRESH_INTERVAL);
-
-    // History API — кнопка «Назад»
-    history.replaceState({ page: 'employee' }, '');
-
-    window.addEventListener('popstate', (e) => {
-      // Закрыть модалку fail если открыта
-      const failModal = document.getElementById('fail-modal');
-      if (failModal && failModal.classList.contains('active')) {
-        failModal.classList.remove('active');
-        return;
+    document.addEventListener('keydown', event => {
+      if (!activeModal) return;
+      if (event.key === 'Escape') { event.preventDefault(); closeModal(); }
+      if (event.key === 'Tab') {
+        const focusable = [...byId(activeModal).querySelectorAll('button:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]')];
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
-      // Иначе — вернуться на экран входа
-      Auth.logout();
     });
+    window.addEventListener('online', () => { if (!checkDay()) loadDayData(); });
+    window.addEventListener('offline', renderAll);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && !checkDay()) loadDayData(); });
+    window.addEventListener('pageshow', event => { if (event.persisted && !checkDay()) loadDayData(); });
+    renderAll();
+    loadDayData();
+    setInterval(tick, 1000);
+    setInterval(() => { if (!document.hidden && !checkDay()) loadDayData(); }, CONFIG.REFRESH_INTERVAL);
   });
-
 })();
